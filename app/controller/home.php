@@ -20,7 +20,7 @@ class home extends base
 	 */
 	function index()
 	{
-		
+		table::wp_posts(1);
 	}
 	/**
 	 * 若开启了自定义异常路由,则必须存在Error404和Error500方法

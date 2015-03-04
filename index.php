@@ -37,9 +37,9 @@ define('ERROR_PAGE_500','');//Error500
 //mysql数据库配置
 define('DB_HOST','127.0.0.1');
 define('DB_PORT',3306);
-define('DB_NAME','blog');
+define('DB_NAME','cms');
 define('DB_USER','root');
-define('DB_PASS',123456);
+define('DB_PASS','root');
 
 //sqlite 数据库配置
 define('SQLITE',APP_PATH.'data.db');
@@ -56,9 +56,8 @@ app::route('\/about',array('home','about'));
 
 //也可以添加自动加载,或者加载程序设置
 S('functions');//加载扩展函数库
-
 S('app_config');// 加载应用程序配置,你也可以将数据库,正则,smtp等配置信息移入应用设置文件
-
+M('cms');
 //配置完,可以启动啦
 app::start();
 
