@@ -234,11 +234,11 @@ final class table extends cms
 	public static function tableGeter($table=null,$args=null,$column='*')
 	{
 
-		if(is_int($args))
+		if(is_int($args)||preg_match('/^\d+$/', $args))
 		{
 			return self::getCms()->selectById($table,$args,$column);
 		}
-		else if(is_array($args))
+		else if(is_array($args) or !empty($args))
 		{
 			return self::getCms()->selectWhere($table,$args,null,$column);
 		}
