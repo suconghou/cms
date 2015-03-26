@@ -166,7 +166,7 @@ class app
 		{
 			$GLOBALS['APP']['CLI']=true;
 			$_SERVER['REQUEST_URI']=null;
-			chdir(ROOT);
+			(substr(ROOT,0,7)=='phar://')||chdir(ROOT);
 			foreach ($GLOBALS['argv'] as $key=>$uri)
 			{
 				if($key==0)
@@ -1522,7 +1522,7 @@ function json($data,$callback=null)
 }
 function byteFormat($size,$dec=2)
 {
-	$size=abs($size);
+	$size=max(abs($size),1);
 	$unit=array("B","KB","MB","GB","TB","PB","EB","ZB","YB");
 	return round($size/pow(1024,($i=floor(log($size,1024)))),$dec).' '.$unit[$i];
 }
