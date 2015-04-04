@@ -23,11 +23,7 @@ class app
 		set_include_path(LIB_PATH);//此路径下可直接include
 		error_reporting(DEBUG?E_ALL:0);
 		set_error_handler('Error');///异常处理
-		defined('STDIN')&&self::runCli();
-		if(!isset($GLOBALS['APP']['CLI']))
-		{
-			self::process(self::init());
-		}
+		defined('STDIN')?self::runCli():self::process(self::init());
 	}
 	/**
 	 * 内部转向,可以指定一个方法,控制器保持原有的
@@ -107,7 +103,7 @@ class app
 	public static function log($msg,$type='DEBUG')
 	{
 		$path=APP_PATH.'log/'.date('Y-m-d').'.log';
-		$msg=strtoupper($type).'-'.date('Y-m-d H:i:s').' ==> '.$msg.PHP_EOL;
+		$msg=strtoupper($type).'-'.date('Y-m-d H:i:s').' ==> '.(is_array($msg)?var_export($msg,true):$msg).PHP_EOL;
 		if(is_writable(APP_PATH.'log'))
 		{
 			//error消息和开发模式,测试模式全部记录
@@ -182,7 +178,7 @@ class app
 					$GLOBALS['APP']['router'][]=$uri;
 				}
 			}
-			self::runRouter($GLOBALS['APP']['router']);
+			return self::runRouter($GLOBALS['APP']['router']);
 		}
 		else
 		{
@@ -213,12 +209,12 @@ class app
 				if(isset($_SERVER['HTTP_IF_MODIFIED_SINCE']))
 				{
 					header('Last-Modified: ' . $_SERVER['HTTP_IF_MODIFIED_SINCE']);	 
-					exit(http_response_code(304));  
+					return http_response_code(304);  
 				}
 				else
 				{	
 					header('Last-Modified: ' . gmdate('D, d M y H:i:s',$now). ' GMT');	 
-					exit(readfile($hash));
+					return readfile($hash);
 				}
 			}
 			else //缓存已过期
@@ -394,7 +390,7 @@ class app
 		$cache_file=CACHE_PATH.md5(baseUrl($router_arr)).'.html';
 		if($delete)
 		{
-			return file_exists($cache_file)&&unlink($cache_file);
+			return is_file($cache_file)&&unlink($cache_file);
 		}
 		else
 		{
@@ -425,7 +421,7 @@ class app
 				$file=sys_get_temp_dir().'/'.date('Ymd');
 				self::setItem('sys-filecache',$file);
 			}
-			if(file_exists($file))
+			if(is_file($file))
 			{
 				$data=unserialize(file_get_contents($file));
 			}
@@ -446,13 +442,12 @@ class app
 	{
 		try
 		{
-			
 			if(!$file=self::getItem('sys-filecache'))
 			{
 				$file=sys_get_temp_dir().'/'.date('Ymd');
 				self::setItem('sys-filecache',$file);
 			}
-			if(file_exists($file))
+			if(is_file($file))
 			{
 				$data=unserialize(file_get_contents($file));
 				return isset($data[$key])?$data[$key]:$default;
@@ -478,11 +473,11 @@ class app
 			}
 			if(is_null($key))
 			{
-				return file_exists($file)&&unlink($file);
+				return is_file($file)&&unlink($file);
 			}
 			else
 			{
-				if(file_exists($file))
+				if(is_file($file))
 				{
 					$data=unserialize(file_get_contents($file));
 					unset($data[$key]);
@@ -531,8 +526,8 @@ function Error($errno, $errstr, $errfile=null, $errline=null)
 		$errormsg="ERROR({$errno}) {$errstr} at {$errfile} on line {$errline} ";
 		$code=500;
 	}
-	isset($GLOBALS['APP']['CLI'])||http_response_code($code);
 	app::log($errormsg,'ERROR');
+	isset($GLOBALS['APP']['CLI'])||(app::getItem('sys-error')&&exit('Error Found In Error Handler'))||(http_response_code($code)&&app::setItem('sys-error',true));
 	if(!DEBUG&&defined('ERROR_PAGE_404')&&defined('ERROR_PAGE_500')&&ERROR_PAGE_404&&ERROR_PAGE_500) //线上模式且自定义了404和500
 	{
 		if(isset($GLOBALS['APP']['router'][0])&&is_file(CONTROLLER_PATH.$GLOBALS['APP']['router'][0].'.php'))
@@ -662,26 +657,25 @@ function S($lib,$param=null)
 	}
 }
 //加载视图,传递参数,设置缓存
-function V($loadViewFileName,$dataPassToView=array(),$fileCacheMinute=0)
+function V($_v_,$_data_=array(),$fileCacheMinute=0)
 {
 	if(defined('APP_TIME_SPEND'))
 	{
 		Error('500','Function V Can Only Use Once , Use template Instead ! ');
 	}
-	$loadViewFileName=VIEW_PATH.$loadViewFileName.'.php';
-	if(is_file($loadViewFileName))
+	if((is_file(VIEW_PATH.$_v_)&&($_v_=VIEW_PATH.$_v_))||(is_file(VIEW_PATH.$_v_.'.php')&&($_v_=VIEW_PATH.$_v_.'.php')))
 	{
-		if($fileCacheMinute||(is_int($dataPassToView)&&($dataPassToView>0)))
+		if($fileCacheMinute||(is_int($_data_)&&($_data_>0)))
 		{
-			$cacheTime=$fileCacheMinute?$fileCacheMinute:$dataPassToView;
+			$cacheTime=$fileCacheMinute?$fileCacheMinute:$_data_;
 			$GLOBALS['APP']['cache']['time']=intval($cacheTime*60);
 			$GLOBALS['APP']['cache']['file']=true;
 		}
 		GZIP?ob_start("ob_gzhandler"):ob_start();
 		define('APP_TIME_SPEND',round((microtime(true)-APP_START_TIME),4));//耗时
 		define('APP_MEMORY_SPEND',byteFormat(memory_get_usage()-APP_START_MEMORY));
-		(is_array($dataPassToView)&&!empty($dataPassToView))&&extract($dataPassToView);
-		include $loadViewFileName;
+		(is_array($_data_)&&!empty($_data_))&&extract($_data_);
+		include $_v_;
 		if(!empty($GLOBALS['APP']['cache']['file']))//启用了缓存,并且启用了文件缓存
 		{
 			$expires_time=intval(time()+$GLOBALS['APP']['cache']['time']);
@@ -707,7 +701,7 @@ function V($loadViewFileName,$dataPassToView=array(),$fileCacheMinute=0)
 	}
 	else
 	{
-		Error('404','View File '.$loadViewFileName.' Not Found ! ');
+		Error('404','View File '.$_v_.' Not Found ! ');
 	}
 
 }
@@ -727,7 +721,7 @@ function C($time,$file=false)
 		header("Expires: ".gmdate("D, d M Y H:i:s",$last_expire+$seconds)." GMT");
 		header("Cache-Control: max-age=".(($last_expire+$seconds)-$now));
 		header('Last-Modified: ' . gmdate('D, d M y H:i:s',$last_expire). ' GMT'); 
-		exit(http_response_code(304));	
+		exit(http_response_code(304));
 		
 	}
 	else
@@ -738,18 +732,16 @@ function C($time,$file=false)
 	}
 }
 
-function template($loadViewFileName,$data=array())///加载模版
+function template($_v_,$_data_=array())///加载模版
 {
-	$loadViewFileName=VIEW_PATH.$loadViewFileName.'.php';
-	if(is_file($loadViewFileName))
+	if((is_file(VIEW_PATH.$_v_)&&($_v_=VIEW_PATH.$_v_))||(is_file(VIEW_PATH.$_v_.'.php')&&($_v_=VIEW_PATH.$_v_.'.php')))
 	{
-		is_array($data)||empty($data)||Error('500','Param To View '.$loadViewFileName.' Must Be An Array');
-		empty($data)||extract($data);
-		include $loadViewFileName;
+		(is_array($_data_)&&extract($_data_))||empty($_data_)||Error('500','Param To View '.$_v_.' Must Be An Array');
+		include $_v_;
 	}
 	else
 	{
-		Error('404','Template File '.$loadViewFileName.' Not Found !');
+		Error('404','Template File '.$_v_.' Not Found !');
 	}
 }
 
@@ -1084,7 +1076,7 @@ class Validate
 				{
 					throw new Exception($item['require'], -1);
 				}
-			}			
+			}
 
 		}
 		catch(Exception $e)
@@ -1269,7 +1261,7 @@ class db extends PDO
 					self::$pdo->exec('PRAGMA temp_store = MEMORY');
 				}
 			}
-			catch ( Exception $e )
+			catch (Exception $e)
 			{
 				Error('500','Open Sqlite Database Error ! '.$e->getMessage());
 			}
@@ -1281,11 +1273,11 @@ class db extends PDO
 				if(self::$pdo==null)
 				{
 					$dsn="mysql:host=".DB_HOST.";dbname=".DB_NAME.";port=".DB_PORT;
-					self::$pdo= new PDO ($dsn,DB_USER,DB_PASS,array (PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8"));
+					self::$pdo= new PDO ($dsn,DB_USER,DB_PASS,array(PDO::ATTR_PERSISTENT=>true,PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8"));
 					self::$pdo->setAttribute(PDO::ATTR_ERRMODE,PDO::ERRMODE_EXCEPTION);
 				}	
 			}
-			catch ( Exception $e )
+			catch (Exception $e)
 			{
 				Error('500','Connect Mysql Database Error ! '.$e->getMessage());
 			}
@@ -1402,10 +1394,7 @@ class db extends PDO
 	{
 		Error('500','Call Error Static Method '.$method.' In Class '.__CLASS__);
 	}
-	function __destruct()
-	{
-		self::$pdo=null;
-	}
+
 }//end class db
 
 
@@ -1528,8 +1517,7 @@ function byteFormat($size,$dec=2)
 }
 function dateFormat($time)
 {
-	$t=time()-$time;
-	if($t<1)return false;
+	$t=max(time()-$time,1);
 	$f=array(
 	'31536000'=>'年',
 	'2592000'=>'个月',

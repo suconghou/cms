@@ -11,7 +11,7 @@
  *
  * table::config('site_name') //获取设置 site_name
  * table::config('site_name','new name'); //设置参数site_name
- * table::config() //空参数,则获取所有的设置为一个二维数组
+ * table::config() //空参数,则获取所有的设置为一个一维map数组
  * 
  * 可以直接取得数据库某个表,某一列,某一行,某一条件
  * 魔术函数
