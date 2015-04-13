@@ -17,6 +17,7 @@ class app
 	 */
 	public static function start()
 	{
+		GZIP?ob_end_clean()&&ob_start("ob_gzhandler"):ob_start();
 		define('APP_START_TIME',microtime(true));
 		define('APP_START_MEMORY',memory_get_usage());
 		date_default_timezone_set('PRC');//设置时区
@@ -46,7 +47,7 @@ class app
 		}
 		else if(is_dir($controllerDir))
 		{
-			$controllerFile=$controllerDir.'/'.$router[1].'.php';
+			$controllerFile=$controllerDir.DIRECTORY_SEPARATOR.$router[1].'.php';
 			if(is_file($controllerFile))
 			{
 				$controllerName=$router[1];
@@ -102,7 +103,7 @@ class app
 	}
 	public static function log($msg,$type='DEBUG')
 	{
-		$path=APP_PATH.'log/'.date('Y-m-d').'.log';
+		$path=APP_PATH.'log'.DIRECTORY_SEPARATOR.date('Y-m-d').'.log';
 		$msg=strtoupper($type).'-'.date('Y-m-d H:i:s').' ==> '.(is_array($msg)?var_export($msg,true):$msg).PHP_EOL;
 		if(is_writable(APP_PATH.'log'))
 		{
@@ -322,7 +323,7 @@ class app
 		if(is_array($router))
 		{
 			isset($GLOBALS['APP']['CLI'])&&die('Async In CLI Mode Need Whole Url ');
-			$url='http://'.Request::server('HTTP_HOST').'/'.implode('/',$router);
+			$url='http://'.$_SERVER['HTTP_HOST'].'/'.implode('/',$router);
 		}
 		else
 		{
@@ -401,25 +402,25 @@ class app
 	/**
 	 * 全局变量获取设置
 	 */
-	public static function getItem($key,$default=null)
+	public static function get($key,$default=null)
 	{
 		return isset(self::$global[$key])?self::$global[$key]:$default;
 	}
 
-	public static function setItem($key,$value)
+	public static function set($key,$value)
 	{
 		self::$global[$key]=$value;
 		return self::$global;
 	}
 
-	public static function set($key,$value)
+	public static function setItem($key,$value)
 	{
 		try
 		{	
-			if(!$file=self::getItem('sys-filecache'))
+			if(!$file=self::get('sys-filecache'))
 			{
-				$file=sys_get_temp_dir().'/'.date('Ymd');
-				self::setItem('sys-filecache',$file);
+				$file=sys_get_temp_dir().DIRECTORY_SEPARATOR.date('Ymd');
+				self::set('sys-filecache',$file);
 			}
 			if(is_file($file))
 			{
@@ -434,18 +435,16 @@ class app
 			app::log($e->getMessage(),'ERROR');
 			return false;
 		}
-			
-
 	}
 
-	public static function get($key,$default=null)
+	public static function getItem($key,$default=null)
 	{
 		try
 		{
-			if(!$file=self::getItem('sys-filecache'))
+			if(!$file=self::get('sys-filecache'))
 			{
-				$file=sys_get_temp_dir().'/'.date('Ymd');
-				self::setItem('sys-filecache',$file);
+				$file=sys_get_temp_dir().DIRECTORY_SEPARATOR.date('Ymd');
+				self::set('sys-filecache',$file);
 			}
 			if(is_file($file))
 			{
@@ -459,17 +458,16 @@ class app
 			app::log($e->getMessage(),'ERROR');
 			return false;
 		}
-
 	}
 
-	public static function del($key=null)
+	public static function clearItem($key=null)
 	{
 		try
 		{
-			if(!$file=self::getItem('sys-filecache'))
+			if(!$file=self::get('sys-filecache'))
 			{
-				$file=sys_get_temp_dir().'/'.date('Ymd');
-				self::setItem('sys-filecache',$file);
+				$file=sys_get_temp_dir().DIRECTORY_SEPARATOR.date('Ymd');
+				self::set('sys-filecache',$file);
 			}
 			if(is_null($key))
 			{
@@ -527,7 +525,7 @@ function Error($errno, $errstr, $errfile=null, $errline=null)
 		$code=500;
 	}
 	app::log($errormsg,'ERROR');
-	isset($GLOBALS['APP']['CLI'])||(app::getItem('sys-error')&&exit('Error Found In Error Handler'))||(http_response_code($code)&&app::setItem('sys-error',true));
+	isset($GLOBALS['APP']['CLI'])||(app::get('sys-error')&&exit('Error Found In Error Handler'))||(http_response_code($code)&&app::set('sys-error',true));
 	if(!DEBUG&&defined('ERROR_PAGE_404')&&defined('ERROR_PAGE_500')&&ERROR_PAGE_404&&ERROR_PAGE_500) //线上模式且自定义了404和500
 	{
 		if(isset($GLOBALS['APP']['router'][0])&&is_file(CONTROLLER_PATH.$GLOBALS['APP']['router'][0].'.php'))
@@ -663,7 +661,7 @@ function V($_v_,$_data_=array(),$fileCacheMinute=0)
 	{
 		Error('500','Function V Can Only Use Once , Use template Instead ! ');
 	}
-	if((is_file(VIEW_PATH.$_v_)&&($_v_=VIEW_PATH.$_v_))||(is_file(VIEW_PATH.$_v_.'.php')&&($_v_=VIEW_PATH.$_v_.'.php')))
+	if((is_file(VIEW_PATH.$_v_.'.php')&&($_v_=VIEW_PATH.$_v_.'.php'))||(is_file(VIEW_PATH.$_v_)&&($_v_=VIEW_PATH.$_v_)))
 	{
 		if($fileCacheMinute||(is_int($_data_)&&($_data_>0)))
 		{
@@ -671,7 +669,6 @@ function V($_v_,$_data_=array(),$fileCacheMinute=0)
 			$GLOBALS['APP']['cache']['time']=intval($cacheTime*60);
 			$GLOBALS['APP']['cache']['file']=true;
 		}
-		GZIP?ob_start("ob_gzhandler"):ob_start();
 		define('APP_TIME_SPEND',round((microtime(true)-APP_START_TIME),4));//耗时
 		define('APP_MEMORY_SPEND',byteFormat(memory_get_usage()-APP_START_MEMORY));
 		(is_array($_data_)&&!empty($_data_))&&extract($_data_);
@@ -689,15 +686,9 @@ function V($_v_,$_data_=array(),$fileCacheMinute=0)
 			$cache_file=app::fileCache($router_arr);
 			file_put_contents($cache_file,$contents);
 			touch($cache_file,$expires_time);
-			ob_end_flush();
-			flush();
 		}
-		else //未启用缓存或http缓存,若为http缓存则在之前必有处理
-		{
-			ob_end_flush();
-			flush();
-		}
-
+		ob_end_flush();
+		flush();
 	}
 	else
 	{
@@ -714,7 +705,7 @@ function C($time,$file=false)
 	///使用了http缓存,在此处捕获缓存
 	$now=time();
 	$expires_time=time()+$seconds;
-	$last_expire = Request::server('HTTP_IF_MODIFIED_SINCE',0);
+	$last_expire = isset($_SERVER['HTTP_IF_MODIFIED_SINCE'])?$_SERVER['HTTP_IF_MODIFIED_SINCE']:0;
 	if($last_expire&&((strtotime($last_expire)+$seconds-$now)>0))
 	{	
 		$last_expire=strtotime($last_expire);
@@ -734,7 +725,7 @@ function C($time,$file=false)
 
 function template($_v_,$_data_=array())///加载模版
 {
-	if((is_file(VIEW_PATH.$_v_)&&($_v_=VIEW_PATH.$_v_))||(is_file(VIEW_PATH.$_v_.'.php')&&($_v_=VIEW_PATH.$_v_.'.php')))
+	if((is_file(VIEW_PATH.$_v_.'.php')&&($_v_=VIEW_PATH.$_v_.'.php'))||(is_file(VIEW_PATH.$_v_)&&($_v_=VIEW_PATH.$_v_)))
 	{
 		(is_array($_data_)&&extract($_data_))||empty($_data_)||Error('500','Param To View '.$_v_.' Must Be An Array');
 		include $_v_;
@@ -1272,8 +1263,8 @@ class db extends PDO
 			{		
 				if(self::$pdo==null)
 				{
-					$dsn="mysql:host=".DB_HOST.";dbname=".DB_NAME.";port=".DB_PORT;
-					self::$pdo= new PDO ($dsn,DB_USER,DB_PASS,array(PDO::ATTR_PERSISTENT=>true,PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8"));
+					$dsn='mysql:host='.DB_HOST.';dbname='.DB_NAME.';port='.DB_PORT.';charset=UTF8';
+					self::$pdo= new PDO ($dsn,DB_USER,DB_PASS,array(PDO::ATTR_PERSISTENT=>TRUE));
 					self::$pdo->setAttribute(PDO::ATTR_ERRMODE,PDO::ERRMODE_EXCEPTION);
 				}	
 			}
@@ -1291,7 +1282,7 @@ class db extends PDO
 		{
 			self::ready();
 			$rs=self::$pdo->exec($sql);
-			app::setItem('sys-sql-count',app::getItem('sys-sql-count')+1);
+			app::set('sys-sql-count',app::get('sys-sql-count')+1);
 			return $rs;
 		}
 		catch (PDOException $e)
@@ -1308,7 +1299,7 @@ class db extends PDO
 		{
 			self::ready();
 			$rs=self::$pdo->query($sql);
-			app::setItem('sys-sql-count',app::getItem('sys-sql-count')+1);
+			app::set('sys-sql-count',app::get('sys-sql-count')+1);
 			if(FALSE==$rs)return array();
 			return $rs->fetchAll(PDO::FETCH_ASSOC);
 		}
@@ -1324,7 +1315,7 @@ class db extends PDO
 		{
 			self::ready();
 			$rs=self::$pdo->query($sql);
-			app::setItem('sys-sql-count',app::getItem('sys-sql-count')+1);
+			app::set('sys-sql-count',app::get('sys-sql-count')+1);
 			if(FALSE==$rs)return array();
 			return $rs->fetch(PDO::FETCH_ASSOC);
 		}
@@ -1341,7 +1332,7 @@ class db extends PDO
 		{
 			self::ready();
 			$rs=self::$pdo->query($sql);
-			app::setItem('sys-sql-count',app::getItem('sys-sql-count')+1);
+			app::set('sys-sql-count',app::get('sys-sql-count')+1);
 			if(FALSE==$rs)return null;
 			return $rs->fetchColumn();
 		}
@@ -1436,7 +1427,7 @@ function __autoload($class)
 		require_once $controller_file;
 		class_exists($class)||Error('500','Load File '.$controller_file.' Succeed,But Not Found Class '.$class);
 	}
-	else if(is_file($lib_file=LIB_PATH."class/{$class}.class.php"))
+	else if(is_file($lib_file=LIB_PATH.'class'.DIRECTORY_SEPARATOR.'{$class}.class.php'))
 	{
 		require_once $lib_file;
 		class_exists($class)||Error('500','Load File '.$lib_file.' Succeed,But Not Found Class '.$class);
@@ -1551,8 +1542,8 @@ function baseUrl($path=null)
 	}
 	else
 	{
-		$protocol=Request::info('protocol');
-		$host=Request::server('HTTP_HOST');
+		$protocol=(isset($_SERVER['HTTPS']) && (strtolower($_SERVER['HTTPS']) != 'off')) ? "https" : "http";
+		$host=$_SERVER['HTTP_HOST'];
 		$path=is_null($path)?null:(is_bool($path)?($path?$_SERVER['REQUEST_URI']:'/'.implode('/',$GLOBALS['APP']['router'])):'/'.ltrim($path,'/'));
 		return "{$protocol}://{$host}".$path;
 	}
