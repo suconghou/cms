@@ -44,12 +44,7 @@ class cms extends database
 	{
 		
 	}
-	public function __call($name,$args)
-	{
-		
-	}
-	
-	public static function __callStatic($name,$args)
+	public function __call($method,$args=null)
 	{
 		
 	}
@@ -201,12 +196,12 @@ final class table extends cms
 		
 	}
 	
-	public function __call($name,$args)
+	public function __call($name,$args=null)
 	{
 
 	}
 
-	public static function __callStatic($name,$args)
+	public static function __callStatic($name,$args=null)
 	{
 		return call_user_func_array(array(__CLASS__,'tableGeter'),array_merge(array($name),$args));
 	}
@@ -259,7 +254,7 @@ final class table extends cms
 	{
 		if(is_null($value)&&$key)
 		{
-			$cache=app::getItem("cms::config-{$key}");
+			$cache=app::get("cms::config-{$key}");
 			if($cache)
 			{
 				return $cache;
@@ -269,7 +264,7 @@ final class table extends cms
 				$where=array('key'=>$key);
 				$ret=self::getCms()->selectWhere(cms::configTable,$where,null,'value');
 				$res=isset($ret[0]['value'])?$ret[0]['value']:null;
-				is_null($res)||app::setItem("cms::config-{$key}",$res);
+				is_null($res)||app::set("cms::config-{$key}",$res);
 				return $res;
 			}
 			
@@ -280,7 +275,7 @@ final class table extends cms
 		}
 		else
 		{
-			$cache=app::getItem('cms::config');
+			$cache=app::get('cms::config');
 			if($cache)
 			{
 				return $cache;
@@ -295,7 +290,7 @@ final class table extends cms
 					{
 						$res[$item['key']]=$item['value'];
 					}
-					app::setItem('cms::config',$res);
+					app::set('cms::config',$res);
 					return $res;	
 				}
 				else
