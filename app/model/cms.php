@@ -18,7 +18,7 @@
  * cms::table()
  * cms::表名()
  */
-class cms extends database
+class Cms extends Database
 {
 	const userTable='user';
 	const fileTable='file';
@@ -188,7 +188,7 @@ class cms extends database
 /**
 * 全部的静态方法调用
 */
-final class table extends cms
+final class table extends Cms
 {
 
 	public function __construct()

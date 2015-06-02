@@ -34,33 +34,49 @@
 *  $db->selectWhere() $db->getList() $db->count() 取得的缓存不能手动删除只能过期失效
 *  $db->deleteById() $db->updateById() $db->deleteWhere() $db->updateWhere() 会自动判断删除缓存,保持数据一致
 *  
-*
-*  该类只提供继承,不能直接实例化
 */
-abstract class database extends db
+class Database extends DB
 {
-	
-	private static $cache; 
-	private static $use=false;  
-	private static $cacheTime=600;  //600秒缓存时间
-	const cacheType='memcache';  //memcache,redis,file,三者其中之一
+	private  $orm;
+	private static $cache;
+	private static $expire=600;  //600秒缓存时间
+	private static $use=false;
+	const type='memcache';  //memcache,redis,file,三者其中之一
 
-	function __construct()
+	/**
+	 * $cfg ,id or array ,where string
+	 */
+	function __construct($cfg=null,$column='*')
 	{
-		
+		$this->orm['table'] = get_called_class();
+		if(!is_null($cfg))
+		{
+			if(is_numeric($cfg))
+			{
+				$this->orm['instance'] = $this->selectById($this->orm['table'],$cfg,$column);
+			}
+			else
+			{
+				$this->orm['instance'] = $this->selectWhere($this->orm['table'],$cfg,null,$column);
+			}
+			if(!$this->orm['instance'])
+			{
+				$this->orm['instance']=false;
+			}
+		}
 	}
 	/**
 	 *  可调用的缓存开关,第一次开启缓存时会初始化cacher
 	 */	
-	function cache($on,$cacheTime=null)
+	function cache($on,$expire=0)
 	{
 		if(is_null(self::$cache)&&$on)
 		{
-			self::$cache=S('class/cache',self::cacheType);
+			self::$cache=S('class/cache',self::type);
 		}
-		if($cacheTime)
+		if($expire)
 		{
-			self::$cacheTime=$cacheTime;
+			self::$expire=$expire;
 		}
 		if($on=='off'||!$on)
 		{
@@ -102,7 +118,7 @@ abstract class database extends db
 			else
 			{
 				$data=$this->getLine($sql);
-				self::$cache->set($key,$data,self::$cacheTime);
+				self::$cache->set($key,$data,self::$expire);
 				return $data;
 			}
 		}
@@ -194,7 +210,7 @@ abstract class database extends db
 				else
 				{
 					$data=$this->getData($sql);
-					self::$cache->set($key,$data,self::$cacheTime);
+					self::$cache->set($key,$data,self::$expire);
 					return $data;
 				}
 			}
@@ -221,7 +237,7 @@ abstract class database extends db
 				else
 				{
 					$data=$this->getData($sql);
-					self::$cache->set($key,$data,self::$cacheTime);
+					self::$cache->set($key,$data,self::$expire);
 					return $data;
 				}
 			}
@@ -339,7 +355,7 @@ abstract class database extends db
 		{
 			 $pdo->rollback();
 			 $error=$e->getMessage();
-			 if($callback)
+			 if(is_callable($callback))
 			 {
 				$callback($error,$e);
 			 }
@@ -353,7 +369,7 @@ abstract class database extends db
 
 	}
 	/***
-	 * 批量更新   
+	 *	批量更新   
 		$updata=array(
 					'18'=>array('name'=>'name18','pass'=>'11'),
 					'19'=>array('name'=>'name19','pass'=>'22')
@@ -393,7 +409,7 @@ abstract class database extends db
 		{
 			 $pdo->rollback();
 			 $error=$e->getMessage();
-			 if($callback)
+			 if(is_callable($callback))
 			 {
 				$callback($error,$e);
 			 }
@@ -409,18 +425,44 @@ abstract class database extends db
 	/**
 	 * 批量删除
 	 */
-	function multDelete($table,$idArr)
+	function multDelete($table,$idArr,$cloumn='id')
 	{
-		$str='';
-		foreach ($idArr as $id)
+		if(is_array($idArr))
 		{
-			$str.="'{$id}',";
+			$str=implode(',', $idArr);
 		}
-		$str=rtrim($str,',');
-		$sql="DELETE FROM `{$table}` WHERE id IN ({$str})";
+		else
+		{
+			$str=$idArr;
+		}
+		$sql="DELETE FROM `{$table}` WHERE {$column} IN ({$str})";
 		return $this->runSql($sql);
 	}
-	//END multInsert multUpdate multDelete 三种批量操作
+	/**
+	 * 批量map查找
+	 */
+	function multSelect($table,$idArr,$selectcolumn='*',$cloumn='id')
+	{
+		if(is_array($idArr))
+		{
+			$str=implode(',', $idArr);
+		}
+		else
+		{
+			$str=$idArr;
+		}
+		$sql="select {$selectcolumn} from `{$table}` where {$cloumn} in ({$str}) ";
+		$ret=$this->getData($sql);
+		$res=array();
+		foreach ($ret as $item)
+		{
+			$id=$item[$cloumn];
+			unset($item[$cloumn]);
+			$res[$id]=count($item)==1?current($item):$item;
+		}
+		return $res;
+	}
+	//END multInsert multUpdate multDelete 四种批量操作
 
 	/**
 	 * 将某个表的某个字段自增1
@@ -468,7 +510,6 @@ abstract class database extends db
 		$sql="SELECT {$select} FROM `{$table}` WHERE ({$strk})";
 		$data=$this->getData($sql);
 		return empty($data)?false:$data;
-
 	}
 	/**
 	 * 按栏目搜索
@@ -487,7 +528,7 @@ abstract class database extends db
 			else
 			{
 				$data=$this->getData($sql);
-				self::$cache->set($key,$data,self::$cacheTime);
+				self::$cache->set($key,$data,self::$expire);
 				return $data;
 			}
 		}
@@ -536,14 +577,13 @@ abstract class database extends db
 					$list=$this->getData($l);
 					$page=ceil($this->getVar($p)/$per);
 					$data=array('list'=>$list,'page'=>$page);
-					self::$cache->set($key,$data,self::$cacheTime);
+					self::$cache->set($key,$data,self::$expire);
 					return $data;
 				}
 			}
 			$list=$this->getData($l);
 			$page=ceil($this->getVar($p)/$per);
-			$data=array('list'=>$list,'page'=>$page);
-			return $data;
+			return array('list'=>$list,'page'=>$page);
 		}
 		else
 		{
@@ -562,7 +602,7 @@ abstract class database extends db
 					$list=$this->getData($l);
 					$page=ceil($this->getVar($p)/$per);
 					$data=array('list'=>$list,'page'=>$page);
-					self::$cache->set($key,$data,self::$cacheTime);
+					self::$cache->set($key,$data,self::$expire);
 					return $data;
 				}
 			}
@@ -605,15 +645,95 @@ abstract class database extends db
 			else
 			{
 				$data=$this->getVar($sql);
-				self::$cache->set($key,$data,$cacheTime);
+				self::$cache->set($key,$data,self::$expire);
 				return $data;
 			}
 		}
 		return $this->getVar($sql);
 		
 	}
-	
 
+	///////////////////////ORM////////////////////////
+	function __get($key)
+	{
+		return isset($this->orm['instance'][$key])?$this->orm['instance'][$key]:null;
+	}
+	function __set($key,$value)
+	{
+		if(empty($this->orm['instance']))
+		{
+			$this->orm['data'][$key]=$value;
+		}
+		else
+		{
+			if(array_key_exists($key, $this->orm['instance']) and ($this->orm['instance'][$key] !== $value) )
+			{
+				$this->orm['data'][$key]=$value;
+				$this->orm['instance'][$key]=$value;
+			}
+		}
+	}
+	function __invoke($data=null)
+	{
+		if($data)
+		{
+			if(!isset($this->orm['instance']))
+			{
+				return $this->insertData($this->orm['table'],$data);
+			}
+			else
+			{
+				if(isset($this->orm['instance']['id']))
+				{
+					return $this->updateById($this->orm['table'],$data);
+				}
+				return false;
+			}
+		}
+		else
+		{
+			return isset($this->orm['instance'])?$this->orm['instance']:null;
+		}
+		
+	}
+	function __toString()
+	{
+		return isset($this->orm['instance'])?var_export($this->orm['instance'],true):null;
+	}
+	function save($data=null)
+	{
+		var_dump($this->orm);
+		if(!isset($this->orm['instance']))
+		{
+			return $this->insertData($this->orm['table'],$this->orm['data']);
+		}
+		else if(!empty($this->orm['data']))
+		{
+			if($this->orm['instance']===false)
+			{
+				return false;
+			}
+			else
+			{
+				return $this->updateById($this->orm['table'],$this->orm['instance']['id'],$this->orm['data']);
+			}
+		}
+		else
+		{
+			return isset($this->orm['instance'][0])?false:true;
+		}
+	}
+	function delete()
+	{
+		if(!empty($this->orm['instance']))
+		{
+			return $this->deleteById($this->orm['table'],$this->orm['instance']['id']);
+		}
+	}
+	function __destruct()
+	{
+		
+	}
 }
 // end class database
 

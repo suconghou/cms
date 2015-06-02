@@ -7,20 +7,38 @@
  * 
  */
 
-
 // function sendMailByCloud 配置
 define('MAIL_CLOUD_USER','postmaster@sumail.sendcloud.org');
 define('MAIL_CLOUD_PASS','123456');
 define('MAIL_CLOUD_FROM','admin@suconghou.cn');
 define('MAIL_CLOUD_NAME','苏苏');
 
-
+function dateFormat($time)
+{
+	$t=max(time()-$time,1);
+	$f=array(
+	'31536000'=>'年',
+	'2592000'=>'个月',
+	'604800'=>'星期',
+	'86400'=>'天',
+	'3600'=>'小时',
+	'60'=>'分钟',
+	'1'=>'秒'
+	);
+	foreach ($f as $k=>$v)
+	{
+		if (0 !=$c=floor($t/(int)$k))
+		{
+			return $c.$v.'前';
+		}
+	}
+}
 
 //采用CURL方式POST数据,数据为拼接好的或者数组
-function postData($url,$post_string)
+function postData($url,$post_string,$header=array('Content-type: application/x-www-form-urlencoded;charset: UTF-8'))
 {
 	$ch=curl_init();
-	curl_setopt_array($ch, array(CURLOPT_URL=>$url,CURLOPT_SSL_VERIFYPEER=>0,CURLOPT_RETURNTRANSFER=>1,CURLOPT_POST=>1,CURLOPT_POSTFIELDS=>is_array($post_string)?http_build_query($post_string):$post_string));
+	curl_setopt_array($ch, array(CURLOPT_URL=>$url,CURLOPT_HTTPHEADER=>$header,CURLOPT_SSL_VERIFYPEER=>0,CURLOPT_RETURNTRANSFER=>1,CURLOPT_POST=>1,CURLOPT_POSTFIELDS=>is_array($post_string)?http_build_query($post_string):$post_string));
 	$result=curl_exec($ch);
 	curl_close($ch);
 	return $result;
@@ -29,7 +47,7 @@ function postData($url,$post_string)
 function postDataByStream($url,$post_string)
 {
 	$data=is_array($post_string)?http_build_query($post_string):$post_string;
-	$options = array('http' => array('method'  => 'POST','header'=>'Content-type: application/x-www-form-urlencoded','content' => $data));
+	$options = array('http' => array('method'  => 'POST','header'=>'Content-type: application/x-www-form-urlencoded;charset: UTF-8','content' => $data));
 	$context = stream_context_create($options);
 	$result  = file_get_contents($url, false, $context);
 	return $result;
@@ -172,22 +190,9 @@ function rgb2hex($r,$g,$b)
 {
 	return dechex($r).dechex($g).dechex($b);
 }
-function dump($var, $echo=true, $label=null, $strict=true)
+if(!function_exists('_'))
 {
-	$label = ($label === null) ? '' : rtrim($label) . ' ';
-	if (!$strict)
-	{
-		if (ini_get('html_errors'))
-		{
-			$output = print_r($var, true);
-			$output = '<pre>' . $label . htmlspecialchars($output, ENT_QUOTES) . '</pre>';
-		}
-		else
-		{
-			$output = $label . print_r($var, true);
-		}
-	}
-	else
+	function _($var)
 	{
 		ob_start();
 		var_dump($var);
@@ -195,17 +200,9 @@ function dump($var, $echo=true, $label=null, $strict=true)
 		if (!extension_loaded('xdebug'))
 		{
 			$output = preg_replace('/\]\=\>\n(\s+)/m', '] => ', $output);
-			$output = '<pre>' . $label . htmlspecialchars($output, ENT_QUOTES) . '</pre>';
+			$output = '<pre>' . htmlspecialchars($output, ENT_QUOTES) . '</pre>';
 		}
-	}
-	if ($echo)
-	{
-		echo($output);
-		return null;
-	}
-	else
-	{
-		return $output;
+		exit($output);
 	}
 }
 //可以指定前缀
@@ -317,6 +314,12 @@ if(!function_exists('array_column'))
 	}
 }
 
+
+function object2array(&$object)
+{
+	$object=json_decode(json_encode($object),true);
+	return $object;
+}
 
 
 function mcrypt($string,$operation,$key='')
