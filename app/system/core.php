@@ -9,7 +9,7 @@
 /**
 * APP 主要控制类
 */
-final class App
+class App
 {
 	private static $global;
 	/**
@@ -51,14 +51,20 @@ final class App
 			}
 			else
 			{
-				ini_get("phar.readonly") and exit('Please set phar.readonly Off in php.ini'.PHP_EOL);
-				$path=ROOT.rtrim($script,'php').'phar';
-				(is_file($path))&&unlink($path);
-				$p=new Phar($path,FilesystemIterator::CURRENT_AS_FILEINFO | FilesystemIterator::KEY_AS_FILENAME,'app.phar');
-				$p->startBuffering();
-				$p->buildFromDirectory(ROOT,'/\.php$/');
-				$p->stopBuffering();
-				return ("Files:{$p->count()}".PHP_EOL."Stored in:".$path.PHP_EOL);
+				try
+				{
+					$path=ROOT.rtrim($script,'php').'phar';
+					(is_file($path))&&unlink($path);
+					$phar=new Phar($path);
+					$phar->startBuffering();
+					$phar->buildFromDirectory(ROOT,'/\.php$/');
+					$phar->stopBuffering();
+					return ("Files:{$phar->count()}".PHP_EOL."Stored in:".$path.PHP_EOL);
+				}
+				catch(Exception $e)
+				{
+					return $e->getMessage();
+				}
 			}
 		}
 	}
@@ -164,7 +170,7 @@ final class App
 
 	}
 	/**
-	 * 内部转向,可以指定一个方法,控制器保持原有的
+	 * 内部转向,转到其他控制器的方法执行,可传递参数,捕获返回
 	 */
 	public static function run($router)
 	{
@@ -228,7 +234,7 @@ final class App
 		if(is_writable(VAR_PATH.'log'))
 		{
 			$path=VAR_PATH.'log'.DIRECTORY_SEPARATOR.date('Y-m-d').'.log';
-			$msg=strtoupper($type).'-'.date('Y-m-d H:i:s').' ==> '.(is_array($msg)?var_export($msg,true):$msg).PHP_EOL;
+			$msg=strtoupper($type).'-'.date('Y-m-d H:i:s').' ==> '.(is_scalar($msg)?$msg:PHP_EOL.print_r($msg,true)).PHP_EOL;
 			//error消息和开发模式,测试模式全部记录
 			if(DEBUG or strtoupper($type)=='ERROR')
 			{
@@ -270,51 +276,47 @@ final class App
 	}
 	/**
 	 * 异步(非阻塞)运行一个路由
-	 * php-fpm下运行回调,其他申明了回调使用curl,否则使用socket
 	 */
-	public static function async($router,$callback=false)
+	public static function async($router=null,$callback=false)
 	{
-		$router=is_array($router)?implode('/', $router):$router;
-		$url=filter_var($router, FILTER_VALIDATE_URL)?$router:baseUrl($router);
-		if(function_exists('fastcgi_finish_request'))
+		if( (function_exists('fastcgi_finish_request')&&fastcgi_finish_request()) or (defined('STDIN')&&defined('STDOUT')) )
 		{
-			fastcgi_finish_request();
-			return is_callable($callback)?$callback(file_get_contents($url),$url):file_get_contents($url);
-		}
-		if($callback===false)
-		{
-			$parts = parse_url($url);
-			$parts['path']=isset($parts['path'])?$parts['path']:'/';
-			$parts['port']=isset($parts['port']) ? $parts['port'] : 80;
-			$parts['query']=isset($parts['query'])?$parts['path'].'?'.$parts['query']:$parts['path'];
-			if(function_exists('stream_socket_client'))
-			{
-				$callback = stream_socket_client($parts['host'].':'.$parts['port'], $errno, $errstr,3);
-			}
-			else if(function_exists('fsockopen'))
-			{
-				$callback = fsockopen($parts['host'],$parts['port'],$errno, $errstr,3);
-			}
-			if($callback)
-			{
-				stream_set_blocking($callback,0);
-				$out = 'GET '.$parts['query']." HTTP/1.1\r\nHost: ".$parts['host']."\r\nConnection: Close\r\n\r\n";
-				fwrite($callback, $out);
-				flush();
-				fclose($callback);
-				return true;
-			}
-			return false;
+			$data=is_array($router)?self::run($router):file_get_contents($router);
 		}
 		else
 		{
-			$ch = curl_init();
-			$curlOpt = array(CURLOPT_URL=>$url,CURLOPT_SSL_VERIFYPEER=>0,CURLOPT_TIMEOUT_MS=>1,CURLOPT_NOSIGNAL=>1, CURLOPT_HEADER=>0,CURLOPT_NOBODY=>1,CURLOPT_RETURNTRANSFER=>1);
-			curl_setopt_array($ch, $curlOpt);
-			curl_exec($ch);
-			curl_close($ch);
-			return true;
+			$url=is_array($router)?baseUrl(implode('/', $router)):$router;
+			if(extension_loaded('curl'))
+			{
+				$ch = curl_init();
+				$curlOpt = array(CURLOPT_URL=>$url,CURLOPT_SSL_VERIFYPEER=>0,CURLOPT_TIMEOUT_MS=>1,CURLOPT_NOSIGNAL=>1, CURLOPT_HEADER=>0,CURLOPT_NOBODY=>1,CURLOPT_RETURNTRANSFER=>1);
+				curl_setopt_array($ch, $curlOpt);
+				curl_exec($ch);
+				curl_close($ch);
+				$data=true;
+			}
+			else
+			{
+				$parts = parse_url($url);
+				$parts['path']=isset($parts['path'])?$parts['path']:'/';
+				$parts['port']=isset($parts['port']) ? $parts['port'] : 80;
+				$parts['query']=isset($parts['query'])?$parts['path'].'?'.$parts['query']:$parts['path'];
+				$fp = fsockopen($parts['host'],$parts['port'],$errno, $errstr,3);
+				if($fp)
+				{
+					stream_set_blocking($fp,0);
+					$out = 'GET '.$parts['query']." HTTP/1.1\r\nHost: ".$parts['host']."\r\nConnection: Close\r\n\r\n";
+					fwrite($fp, $out);
+					fclose($fp);
+					$data=true;
+				}
+				else
+				{
+					$data=false;
+				}
+			}
 		}
+		return is_callable($callback)?$callback($data):$data;
 	}
 	/**
 	 * 计算缓存位置,或删除缓存,传入路由数组或路由字符串
@@ -486,35 +488,15 @@ final class App
 		}
 		else
 		{
-			$ln=defined('STDIN')?PHP_EOL:'</p><p>';
-			$trace=debug_backtrace();
-			$i=count($trace)-1;
-			$li=null;
-			while($i>=0)
+			foreach(debug_backtrace() as $trace)
 			{
-				if(!isset($trace[$i]['file']))
+				if(isset($trace['file'],$trace['type']))
 				{
-					$i--;	continue;
+					$li[]=$trace['file'].'=>'.$trace['class'].$trace['type'].$trace['function'].'() on line '.$trace['line'];
 				}
-				$trace[$i]['class']=isset($trace[$i]['class'])?$trace[$i]['class']:null;
-				$trace[$i]['type']=isset($trace[$i]['type'])?$trace[$i]['type']:null;
-				$li.=$trace[$i]['file'].'=>'.$trace[$i]['class'].$trace[$i]['type'].$trace[$i]['function'].'() on line '.$trace[$i]['line'].$ln;
-				$i--;
 			}
-			if(defined('STDIN'))
-			{
-				echo $errormsg,PHP_EOL,$li;
-				$errfile||exit;
-			}
-			else
-			{
-				if(!DEBUG)
-				{
-					$errormsg="Oops ! Something Error,Error Code:{$errno}";
-					$li="See the log for more information ! {$ln}";
-				}
-				exit("<div style='margin:2% auto;width:80%;box-shadow:0 0 5px #f00;padding:1%;'><p>{$errormsg}{$ln}{$li}</p></div>");
-			}
+			$li=implode(defined('STDIN')?PHP_EOL:'</p><p>',array_reverse($li));
+			echo defined('STDIN')?($errfile?$errormsg.PHP_EOL.$li:exit($errormsg.PHP_EOL.$li)):exit(DEBUG?"<div style='margin:2% auto;width:80%;box-shadow:0 0 5px #f00;padding:1%;'><p>{$errormsg}</p><p>{$li}</p></div>":"<title>Error..</title><center><span style='font-size:300px;color:gray;font-family:黑体'>{$code}...</span></center>");
 		}
 
 	}
@@ -599,13 +581,13 @@ function S($lib,$param=null)
 	}
 }
 //加载视图,传递参数,设置缓存
-function V($_v_,$_data_=array(),$fileCacheMinute=0)
+function V($v,$_data_=array(),$fileCacheMinute=0)
 {
 	if(defined('APP_TIME_SPEND'))
 	{
-		return template($_v_,$_data_);
+		return template($v,$_data_);
 	}
-	if((is_file($_v_=VIEW_PATH.$_v_.'.php'))||(is_file($_v_=VIEW_PATH.$_v_)))
+	if((is_file($_v_=VIEW_PATH.$v.'.php'))||(is_file($_v_=VIEW_PATH.$v)))
 	{
 		if($fileCacheMinute||(is_int($_data_)&&($_data_>0)))
 		{
@@ -840,7 +822,7 @@ class Request
 	}
 	public static function isPost()
 	{
-		return isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'post';
+		return isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST';
 	}
 	public static function isRobot()
 	{
@@ -1389,7 +1371,7 @@ function session($key,$val=null,$delete=false)
 		}
 		else
 		{
-			return isset($_SESSION[$k])?$_SESSION[$k]:null;
+			return isset($_SESSION[$key])?$_SESSION[$key]:null;
 		}
 	}
 	else
@@ -1426,7 +1408,7 @@ function json($data,$callback=null)
 {
 	is_array($data)||parse_str($data,$data);
 	$data=json_encode($data);
-	if($callback&&(is_string($callback)||$callback=Request::get('jsoncallback')))
+	if($callback&&(is_string($callback)||$callback=Request::get('callback')))
 	{
 		exit($callback."(".$data.")");
 	}
