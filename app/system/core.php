@@ -1163,9 +1163,9 @@ class DB extends PDO
 		{
 			$dbType=defined('DB')&&DB?true:false;
 		}
-		if($dbType)//使用sqlite
+		if(!self::$pdo)
 		{
-			if(self::$pdo==null)
+			if($dbType)
 			{
 				try
 				{
@@ -1179,10 +1179,7 @@ class DB extends PDO
 					return app::Error(500,'Open Sqlite Database Error ! '.$e->getMessage());
 				}
 			}
-		}
-		else///使用mysql
-		{
-			if(self::$pdo==null)
+			else
 			{
 				$dsn='mysql:host='.DB_HOST.';dbname='.DB_NAME.';port='.DB_PORT.';charset=UTF8';
 				try
@@ -1421,10 +1418,18 @@ function byteFormat($size,$dec=2)
 	return round($size/pow(1024,($i=floor(log($size,1024)))),$dec).' '.$unit[$i];
 }
 //外部重定向,会立即结束脚本以发送header,内部重定向app::run(array);
-function redirect($url,$seconds=0,$code=302)
+function redirect($url,$timeout=0)
 {
-	http_response_code($code);
-	exit(header("Refresh: {$seconds}; url={$url}"));
+	$timeout=abs(intval($timeout));
+	if(in_array($timeout,array(0,301,302,307)))
+	{
+		header("Location: {$url}",true,$timeout);
+	}
+	else
+	{
+		header("Refresh: {$timeout}; url={$url}");
+	}
+	exit(header("Cache-Control: no-cache",true));
 }
 function baseUrl($path=null)
 {
