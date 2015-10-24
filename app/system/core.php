@@ -4,11 +4,12 @@
  * @author suconghou 
  * @blog http://blog.suconghou.cn
  * @link http://github.com/suconghou/mvc
- * @version 1.8.7
+ * @version 1.8.9
  */
 /**
 * APP 主要控制类
 */
+
 class App
 {
 	private static $global;
@@ -17,14 +18,17 @@ class App
 	 */
 	public static function start()
 	{
-		defined('STDIN')||(GZIP?ob_start("ob_gzhandler"):ob_start());
-		define('APP_START_TIME',microtime(true));
-		define('APP_START_MEMORY',memory_get_usage());
-		date_default_timezone_set('PRC');//设置时区
-		set_include_path(LIB_PATH);//此路径下可直接include
+		self::set('sys-start-time',microtime(true));
+		self::set('sys-start-memory',memory_get_usage());
 		error_reporting(DEBUG?E_ALL:0);
-		set_error_handler(array('app','Error'));///异常处理
+		set_include_path(LIB_PATH);
+		date_default_timezone_set('PRC');
+		set_error_handler(array('app','Error'));
+		set_exception_handler(array('app','Error'));
 		register_shutdown_function(array('app','Shutdown'));
+		defined('DEFAULT_ACTION')||define('DEFAULT_ACTION','index');
+		defined('DEFAULT_CONTROLLER')||define('DEFAULT_CONTROLLER','home');
+		defined('STDIN')||(defined('GZIP')?ob_start("ob_gzhandler"):ob_start());
 		return defined('STDIN')?self::runCli():self::process(self::init());
 	}
 	/**
@@ -33,15 +37,14 @@ class App
 	private static function runCli()
 	{
 		$script=array_shift($GLOBALS['argv']);
-		$phar=substr($script,-4)=='phar';
+		$phar=substr(ROOT,0,7)=='phar://';
 		if($GLOBALS['argc']>1)
 		{
 			$_SERVER['REQUEST_URI']=null;
 			$phar||chdir(ROOT);
 			$router=$GLOBALS['argv'];
-			$router[1]=isset($router[1])?$router[1]:DEFAULT_ACTION;
-			$GLOBALS['APP']['router']=$router;
-			return self::run($router);
+			$ret=self::regexRouter('/'.implode('/',$router));
+			return is_object($ret)?$ret:(($GLOBALS['APP']['router']=$ret?$ret:$router)&&self::run($GLOBALS['APP']['router']));
 		}
 		else
 		{
@@ -53,17 +56,27 @@ class App
 			{
 				try
 				{
-					$path=ROOT.rtrim($script,'php').'phar';
-					(is_file($path))&&unlink($path);
-					$phar=new Phar($path);
+					$pharName=rtrim($script,'php').'phar';
+					$path=ROOT.$pharName;
+					is_file($path) && unlink($path);
+					$phar=new Phar($path,FilesystemIterator::CURRENT_AS_FILEINFO | FilesystemIterator::KEY_AS_FILENAME,$pharName);
 					$phar->startBuffering();
-					$phar->buildFromDirectory(ROOT,'/\.php$/');
+					$dirObj=new RecursiveIteratorIterator(new RecursiveDirectoryIterator(ROOT),RecursiveIteratorIterator::SELF_FIRST);
+					foreach ($dirObj as $file)
+					{
+						if(preg_match('/\\.php$/i',$file))
+						{
+							$phar->addFromString(substr($file,strlen(ROOT)),php_strip_whitespace($file));
+						}
+					}
+					$stub="<?php Phar::mapPhar('$pharName');require 'phar://{$pharName}/{$script}';__HALT_COMPILER();";
+					$phar->setStub($stub);
 					$phar->stopBuffering();
-					return ("Files:{$phar->count()}".PHP_EOL."Stored in:".$path.PHP_EOL);
+					echo "{$phar->count()} Files Stored In ".$path.PHP_EOL;
 				}
 				catch(Exception $e)
 				{
-					return $e->getMessage();
+					echo $e->getMessage().PHP_EOL;
 				}
 			}
 		}
@@ -73,11 +86,11 @@ class App
 	 */
 	private static function init()
 	{
-		(isset($_SERVER['REQUEST_URI'][MAX_URL_LENGTH]))&&self::Error(414,'Request uri too long ! ');
+		(isset($_SERVER['REQUEST_URI'][defined('MAX_URL_LENGTH')?MAX_URL_LENGTH:80]))&&self::Error(414,'Request uri too long ! ');
 		list($uri)=explode('?',$_SERVER['REQUEST_URI']);
-		if(strpos($uri, $_SERVER['SCRIPT_NAME'])!==false)
+		if(strpos($uri,$_SERVER['SCRIPT_NAME'])!==false)
 		{
-			$uri=str_replace($_SERVER['SCRIPT_NAME'], null, $uri);
+			$uri=str_replace($_SERVER['SCRIPT_NAME'],null,$uri);
 		}
 		$router=self::regexRouter($uri);
 		if($router)
@@ -86,8 +99,8 @@ class App
 		}
 		else
 		{
-			$uri=explode('/', $uri);
-			foreach ($uri as  $segment)
+			$uri=explode('/',$uri);
+			foreach ($uri as $segment)
 			{
 				if(!empty($segment))
 				{
@@ -129,45 +142,47 @@ class App
 	 */
 	private static function process($router)
 	{
-		$GLOBALS['APP']['router']=$router;
-		$file=is_object($router[1])?self::fileCache($router[0]):self::fileCache($router); 
-		if(is_file($file))//存在缓存文件
+		if(!is_object($router))
 		{
-			$expire=filemtime($file);
-			$now=time();
-			if($now<$expire) ///缓存未过期
+			$GLOBALS['APP']['router']=$router;
+			$file=is_object($router[1])?self::fileCache($router[0]):self::fileCache($router);
+			if(is_file($file))
 			{
-				header("Expires: ".gmdate("D, d M Y H:i:s", $expire)." GMT");
-				header("Cache-Control: max-age=".($expire-$now));
-				if(isset($_SERVER['HTTP_IF_MODIFIED_SINCE']))
+				$expire=filemtime($file);
+				$now=time();
+				if($now<$expire)
 				{
-					header('Last-Modified: ' . $_SERVER['HTTP_IF_MODIFIED_SINCE']);	 
-					return http_response_code(304);
+					header('Expires: '.gmdate('D, d M Y H:i:s',$expire).' GMT');
+					header('Cache-Control: max-age='.($expire-$now));
+					header('X-Cache: Hit',true);
+					if(isset($_SERVER['HTTP_IF_MODIFIED_SINCE']))
+					{
+						return header('Last-Modified: '.$_SERVER['HTTP_IF_MODIFIED_SINCE'],true,304);	 
+					}
+					else
+					{
+						header('Last-Modified: '.gmdate('D, d M y H:i:s',$now).' GMT',true,200);	 
+						return readfile($file);
+					}
 				}
 				else
 				{
-					header('Last-Modified: ' . gmdate('D, d M y H:i:s',$now). ' GMT');	 
-					return readfile($file);
+					try
+					{
+						unlink($file);
+					}
+					catch(Exception $e)
+					{
+						app::log($e->getMessage(),'ERROR');
+					}
+					return self::run($router);
 				}
 			}
-			else //缓存已过期
+			else
 			{
-				try
-				{
-					unlink($file);  ///删除过期文件
-				}
-				catch(Exception $e)
-				{
-					app::log($e->getMessage(),'ERROR');
-				}
 				return self::run($router);
 			}
 		}
-		else
-		{
-			return self::run($router);
-		}
-
 	}
 	/**
 	 * 内部转向,转到其他控制器的方法执行,可传递参数,捕获返回
@@ -175,17 +190,11 @@ class App
 	public static function run($router)
 	{
 		//含有回调的,0为对应URL,1为回调函数
+		$router=is_array($router)?$router:func_get_args();
+		$router=isset($router[1])?$router:array($router[0],DEFAULT_ACTION);
 		if(is_object($router[1]))
 		{
 			return call_user_func_array($router[1],array_slice($router,2));
-		}
-		if(!is_array($router))
-		{
-			$router=func_get_args();
-		}
-		if(!isset($router[1]))
-		{
-			$router=array(DEFAULT_CONTROLLER,$router[0]);
 		}
 		if(is_file($path=CONTROLLER_PATH.$router[0].'.php'))
 		{
@@ -209,23 +218,21 @@ class App
 		$GLOBALS['APP']['controller'][$controllerName]=isset($GLOBALS['APP']['controller'][$controllerName])?$GLOBALS['APP']['controller'][$controllerName]:$controllerName;
 		if(!$GLOBALS['APP']['controller'][$controllerName] instanceof $controllerName)
 		{
-			$GLOBALS['APP']['controller'][$controllerName]=new $controllerName($router);///实例化控制器	
+			$GLOBALS['APP']['controller'][$controllerName]=new $controllerName($router);
 		}
-		return call_user_func_array(array($GLOBALS['APP']['controller'][$controllerName],$action), array_slice($router,$param));//传入参数
-
+		return is_callable(array($GLOBALS['APP']['controller'][$controllerName],$action))?call_user_func_array(array($GLOBALS['APP']['controller'][$controllerName],$action),array_slice($router,$param)):self::Error(404,'Request Controller Class '.$controllerName.' Method '.$action.' Is Not Callable');
 	}
 	/**
 	 * 正则路由,参数一正则,参数二数组形式的路由表或者回调函数
 	 */
 	public static function route($regex,$arr)
 	{
-		if(is_object($arr))
+		if($arr instanceof Closure)
 		{
 			$GLOBALS['APP']['regexRouter'][$regex]=$arr;
 		}
 		else
 		{
-			$arr=is_array($arr)?$arr:array(strval($arr));			
 			$GLOBALS['APP']['regexRouter'][]=array($regex,$arr);
 		}
 	}
@@ -236,7 +243,7 @@ class App
 			$path=VAR_PATH.'log'.DIRECTORY_SEPARATOR.date('Y-m-d').'.log';
 			$msg=strtoupper($type).'-'.date('Y-m-d H:i:s').' ==> '.(is_scalar($msg)?$msg:PHP_EOL.print_r($msg,true)).PHP_EOL;
 			//error消息和开发模式,测试模式全部记录
-			if(DEBUG or strtoupper($type)=='ERROR')
+			if(DEBUG || strtoupper($type)=='ERROR')
 			{
 				error_log($msg,3,$path);
 			}
@@ -247,12 +254,12 @@ class App
 	 */
 	private static function regexRouter($uri)
 	{
-		if(!empty($GLOBALS['APP']['regexRouter']))//存在正则路由
+		if(!empty($GLOBALS['APP']['regexRouter']))
 		{
 			foreach ($GLOBALS['APP']['regexRouter'] as $regex=>$item)
 			{
 				$regex=is_array($item)?$item[0]:$regex;
-				if(preg_match('/^'.$regex.'$/', $uri,$matches)) //能够匹配正则路由
+				if(preg_match('/^'.$regex.'$/', $uri,$matches))
 				{
 					$url=$matches[0];
 					unset($matches[0],$GLOBALS['APP']['regexRouter']);
@@ -263,60 +270,37 @@ class App
 					}
 					else
 					{
-						if(count($item[1])==1)
+						if(is_string($item[1])) //plugin loader
 						{
-							$item[1][]=DEFAULT_ACTION;
+							return call_user_func_array('S',array_merge(array($item[1]),$matches));
 						}
 						return array_merge($item[1],$matches);
 					}
 				}
 			}
+			unset($GLOBALS['APP']['regexRouter']);
 		}
 		return array();
 	}
-	/**
-	 * 异步(非阻塞)运行一个路由
-	 */
-	public static function async($router=null,$callback=false)
+	public static function async($router=null,Closure $callback=null)
 	{
-		if( (function_exists('fastcgi_finish_request')&&fastcgi_finish_request()) or (defined('STDIN')&&defined('STDOUT')) )
+		function_exists('fastcgi_finish_request')&&fastcgi_finish_request();
+		$data=($router instanceof Closure)?$router():self::run($router);
+		return $callback?$callback($data):$data;
+	}
+	public static function cost($type=null)
+	{
+		switch ($type)
 		{
-			$data=is_array($router)?self::run($router):file_get_contents($router);
+			case 'time':
+				return round((microtime(true)-self::get('sys-start-time',0)),4);
+			case 'memory':
+				return byteFormat(memory_get_usage()-self::get('sys-start-memory',0));
+			case 'query':
+				return self::get('sys-sql-count',0);
+			default:
+				return array('time'=>round((microtime(true)-self::get('sys-start-time',0)),4),'memory'=>byteFormat(memory_get_usage()-self::get('sys-start-memory',0)),'query'=>self::get('sys-sql-count',0));
 		}
-		else
-		{
-			$url=is_array($router)?baseUrl(implode('/', $router)):$router;
-			if(extension_loaded('curl'))
-			{
-				$ch = curl_init();
-				$curlOpt = array(CURLOPT_URL=>$url,CURLOPT_SSL_VERIFYPEER=>0,CURLOPT_TIMEOUT_MS=>1,CURLOPT_NOSIGNAL=>1, CURLOPT_HEADER=>0,CURLOPT_NOBODY=>1,CURLOPT_RETURNTRANSFER=>1);
-				curl_setopt_array($ch, $curlOpt);
-				curl_exec($ch);
-				curl_close($ch);
-				$data=true;
-			}
-			else
-			{
-				$parts = parse_url($url);
-				$parts['path']=isset($parts['path'])?$parts['path']:'/';
-				$parts['port']=isset($parts['port']) ? $parts['port'] : 80;
-				$parts['query']=isset($parts['query'])?$parts['path'].'?'.$parts['query']:$parts['path'];
-				$fp = fsockopen($parts['host'],$parts['port'],$errno, $errstr,3);
-				if($fp)
-				{
-					stream_set_blocking($fp,0);
-					$out = 'GET '.$parts['query']." HTTP/1.1\r\nHost: ".$parts['host']."\r\nConnection: Close\r\n\r\n";
-					fwrite($fp, $out);
-					fclose($fp);
-					$data=true;
-				}
-				else
-				{
-					$data=false;
-				}
-			}
-		}
-		return is_callable($callback)?$callback($data):$data;
 	}
 	/**
 	 * 计算缓存位置,或删除缓存,传入路由数组或路由字符串
@@ -355,77 +339,73 @@ class App
 	}
 	public static function setItem($key,$value)
 	{
-		try
+		$file=sys_get_temp_dir().DIRECTORY_SEPARATOR.md5(ROOT).'.config';
+		if(is_file($file)&&is_array($data=unserialize(file_get_contents($file))))
 		{
-			$file=sys_get_temp_dir().DIRECTORY_SEPARATOR.md5(ROOT);
-			if(is_file($file))
-			{
-				$data=unserialize(file_get_contents($file));
-			}
 			$data[$key]=$value;
-			return file_put_contents($file,serialize($data));
 		}
-		catch(Exception $e)
+		else
 		{
-			app::log($e->getMessage(),'ERROR');
-			return false;
+			$data=array($key=>$value);
 		}
+		return file_put_contents($file,serialize($data))?true:false;
 	}
 	public static function getItem($key,$default=null)
 	{
-		try
+		$file=sys_get_temp_dir().DIRECTORY_SEPARATOR.md5(ROOT).'.config';
+		if(is_file($file)&&is_array($data=unserialize(file_get_contents($file))))
 		{
-			$file=sys_get_temp_dir().DIRECTORY_SEPARATOR.md5(ROOT);
-			if(is_file($file))
-			{
-				$data=unserialize(file_get_contents($file));
-				return isset($data[$key])?$data[$key]:$default;
-			}
-			return $default;
+			return isset($data[$key])?$data[$key]:$default;
 		}
-		catch(Exception $e)
-		{
-			app::log($e->getMessage(),'ERROR');
-			return false;
-		}
+		return $default;
 	}
 	public static function clearItem($key=null)
 	{
-		try
+		$file=sys_get_temp_dir().DIRECTORY_SEPARATOR.md5(ROOT).'.config';
+		if(is_null($key))
 		{
-			$file=sys_get_temp_dir().DIRECTORY_SEPARATOR.md5(ROOT);
-			if(is_null($key))
-			{
-				return is_file($file)&&unlink($file);
-			}
-			else
-			{
-				if(is_file($file))
-				{
-					$data=unserialize(file_get_contents($file));
-					unset($data[$key]);
-					return file_put_contents($file, serialize($data))?true:false;
-				}
-				return true;
-			}
+			return unlink($file);
 		}
-		catch(Exception $e)
+		else
 		{
-			app::log($e->getMessage(),'ERROR');
-			return false;
+			if(is_file($file)&&is_array($data=unserialize(file_get_contents($file))))
+			{
+				unset($data[$key]);
+				return file_put_contents($file,serialize($data))?true:false;
+			}
+			return true;
 		}
-
 	}
-	public static function timer($function,$exit=false,$callback=null)
+	public static function timer(Closure $function,$exit=false,Closure $callback=null)
 	{
 		while(true)
 		{
-			is_callable($function)&&$function();
-			if(is_callable($exit)?$exit():$exit)
+			$data=$function();
+			$break=($exit instanceof Closure)?$exit($data):$exit;
+			if($break)
 			{
-				return is_callable($callback)?$callback():null;
+				return $callback?$callback($data):$data;
 			}
 		}
+	}
+	public static function config($key=null,$default=null,$configFile='config.php')
+	{
+		$config=isset(self::$global[$configFile])?self::$global[$configFile]:(self::$global[$configFile]=include_once ROOT.$configFile);
+		if($key=array_filter(explode('.',$key),function($item){return $item;}))
+		{
+			foreach ($key as $item)
+			{
+				if(is_array($config)&&isset($config[$item]))
+				{
+					$config=$config[$item];
+				}
+				else
+				{
+					return $default;
+				}
+			}
+		}
+		return $config;
 	}
 	public static function on($event,$function)
 	{
@@ -442,14 +422,38 @@ class App
 			return call_user_func_array(self::$global['event'][$event],is_array($arguments)?$arguments:array($arguments));
 		}
 	}
+	public static function method($method,Closure $function)
+	{
+		return self::$global['method'][$method]=$function;
+	}
+	public static function __callStatic($method,$args=null)
+	{
+		if(isset(self::$global['method'][$method]))
+		{
+			return call_user_func_array(self::$global['method'][$method],$args);
+		}
+		return self::Error(500,'Call Error Static Method '.$method.' In Class '.get_called_class());
+	}
 	//异常处理 404 500等
-	public static function Error($errno, $errstr, $errfile=null, $errline=null)
+	public static function Error($errno,$errstr=null,$errfile=null,$errline=null)
 	{
 		if((DEBUG<2)&&in_array($errno,array(E_NOTICE,E_WARNING)))
 		{
 			return;
 		}
-		else if(in_array($errno,array(400,403,404,414,500,502,503,504)))
+		else if($errno instanceof Exception)
+		{
+			$errstr=$errno->getMessage();
+			$errfile=$errno->getFile();
+			$errline=$errno->getLine();
+			$backtrace=$errno->getTrace();
+			$errno=$errno->getCode();
+		}
+		else
+		{
+			$backtrace=debug_backtrace();
+		}
+		if(in_array($errno,array(400,403,404,414,500,502,503,504)))
 		{
 			$errormsg="ERROR({$errno}) {$errstr}";
 			$code=$errno;
@@ -459,36 +463,12 @@ class App
 			$errormsg="ERROR({$errno}) {$errstr} in {$errfile} on line {$errline} ";
 			$code=500;
 		}
-		app::log($errormsg,'ERROR');
+		$errno==404 || app::log($errormsg,'ERROR');
 		defined('STDIN')||(app::get('sys-error')&&exit('Error Found In Error Handler'))||(http_response_code($code)&&app::set('sys-error',true));
-		if(!DEBUG&&defined('ERROR_PAGE_404')&&defined('ERROR_PAGE_500')) //线上模式且自定义了404和500
+		if(DEBUG||defined('STDIN'))
 		{
-			if(isset($GLOBALS['APP']['router'][0])&&is_file(CONTROLLER_PATH.$GLOBALS['APP']['router'][0].'.php'))
-			{
-				$errorController=$GLOBALS['APP']['router'][0];
-			}
-			else
-			{
-				$errorController=DEFAULT_CONTROLLER;
-			}
-			$errorRouter=array($errorController,$errno==404?ERROR_PAGE_404:ERROR_PAGE_500,$errormsg);
-			if(method_exists($errorController,$errorRouter[1]))//当前已加载的控制器或默认控制器中含有ERROR处理
-			{
-				$GLOBALS['APP']['controller'][$errorController]=isset($GLOBALS['APP']['controller'][$errorController])?$GLOBALS['APP']['controller'][$errorController]:$errorController;
-				if(!$GLOBALS['APP']['controller'][$errorController] instanceof $errorController)
-				{
-					$GLOBALS['APP']['controller'][$errorController]=new $errorController($errorRouter);///实例化控制器	
-				}
-				exit(call_user_func_array(array($GLOBALS['APP']['controller'][$errorController],$errorRouter[1]), array($errormsg)));//传入参数
-			}
-			else
-			{
-				exit('No Error Handler Found In '.$errorController.'::'.$errorRouter[1]);
-			}
-		}
-		else
-		{
-			foreach(debug_backtrace() as $trace)
+			$li=array();
+			foreach($backtrace as $trace)
 			{
 				if(isset($trace['file'],$trace['type']))
 				{
@@ -496,20 +476,32 @@ class App
 				}
 			}
 			$li=implode(defined('STDIN')?PHP_EOL:'</p><p>',array_reverse($li));
-			echo defined('STDIN')?($errfile?$errormsg.PHP_EOL.$li:exit($errormsg.PHP_EOL.$li)):exit(DEBUG?"<div style='margin:2% auto;width:80%;box-shadow:0 0 5px #f00;padding:1%;'><p>{$errormsg}</p><p>{$li}</p></div>":"<title>Error..</title><center><span style='font-size:300px;color:gray;font-family:黑体'>{$code}...</span></center>");
+			echo defined('STDIN')?($errfile?$errormsg.PHP_EOL.$li.PHP_EOL:exit($errormsg.PHP_EOL.$li.PHP_EOL)):exit("<div style='margin:2% auto;width:80%;box-shadow:0 0 5px #f00;padding:1%;'><p>{$errormsg}</p><p>{$li}</p></div>");
 		}
-
+		else
+		{
+			$errorController=(isset($GLOBALS['APP']['router'][0])&&is_file(CONTROLLER_PATH.$GLOBALS['APP']['router'][0].'.php'))?$GLOBALS['APP']['router'][0]:DEFAULT_CONTROLLER;
+			$errorRouter=array($errorController,$errno==404?(defined('ERROR_PAGE_404')?ERROR_PAGE_404:'Error404'):(defined('ERROR_PAGE_500')?ERROR_PAGE_500:'Error500'),$errormsg);
+			$errorPage="<title>Error..</title><center><span style='font-size:300px;color:gray;font-family:黑体'>{$code}...</span></center>";
+			if(method_exists($errorController,$errorRouter[1]))//当前已加载的控制器或默认控制器中含有ERROR处理
+			{
+				$GLOBALS['APP']['controller'][$errorController]=isset($GLOBALS['APP']['controller'][$errorController])?$GLOBALS['APP']['controller'][$errorController]:$errorController;
+				if(!$GLOBALS['APP']['controller'][$errorController] instanceof $errorController)
+				{
+					$GLOBALS['APP']['controller'][$errorController]=new $errorController($errorRouter);
+				}
+				$errorPage=is_callable(array($GLOBALS['APP']['controller'][$errorController],$errorRouter[1]))?call_user_func_array(array($GLOBALS['APP']['controller'][$errorController],$errorRouter[1]),array($errormsg)):$errorPage;
+			}
+			exit($errorPage);
+		}
 	}
 	public static function Shutdown()
 	{
-		if(DEBUG)
+		$lastError=error_get_last();
+		if(!empty($lastError))
 		{
-			$lastError=error_get_last();
-			if($lastError)
-			{
-				$errormsg="ERROR({$lastError['type']}) {$lastError['message']} in {$lastError['file']} on line {$lastError['line']} ";
-				return app::log($errormsg,'ERROR');
-			}
+			$errormsg="ERROR({$lastError['type']}) {$lastError['message']} in {$lastError['file']} on line {$lastError['line']} ";
+			return app::log($errormsg,'ERROR');
 		}
 	}
 
@@ -517,9 +509,10 @@ class App
 // End of class app
 
 //加载model
-function M($model,$param=null)
+function M($model)
 {
-	$arr=explode('/',$model);
+	$arguments=func_get_args();
+	$arr=explode('/',array_shift($arguments));
 	$m=end($arr);
 	$GLOBALS['APP']['model'][$m]=isset($GLOBALS['APP']['model'][$m])?$GLOBALS['APP']['model'][$m]:$m;
 	if($GLOBALS['APP']['model'][$m] instanceof $m)
@@ -531,21 +524,16 @@ function M($model,$param=null)
 		$modelFile=MODEL_PATH.$model.'.php';
 		(is_file($modelFile) && require_once $modelFile)||app::Error(500,'Load Model '.$m.' Failed , Mdoel File '.$modelFile.' Not Found ! ');
 		class_exists($m)||app::Error(500,'Model File '.$modelFile .' Does Not Contain Class '.$m);
-		if(is_null($param))
-		{
-			$GLOBALS['APP']['model'][$m]=new $m();
-		}
-		else
-		{
-			$GLOBALS['APP']['model'][$m]=new $m($param);
-		}
+		$class = new ReflectionClass($m);
+		$GLOBALS['APP']['model'][$m]=$class->newInstanceArgs($arguments);
 		return $GLOBALS['APP']['model'][$m];
 	}
 }
 //加载类库
-function S($lib,$param=null)
+function S($lib)
 {
-	$arr=explode('/',$lib);
+	$arguments=func_get_args();
+	$arr=explode('/',array_shift($arguments));
 	$l=end($arr);
 	$GLOBALS['APP']['lib'][$l]=isset($GLOBALS['APP']['lib'][$l])?$GLOBALS['APP']['lib'][$l]:$l;
 	if($GLOBALS['APP']['lib'][$l] instanceof $l)
@@ -554,20 +542,13 @@ function S($lib,$param=null)
 	}
 	else
 	{
-		if(is_file($classFile=LIB_PATH.$lib.'.class.php'))///是类库文件
+		if(is_file($classFile=LIB_PATH.$lib.'.class.php'))
 		{
 			require_once $classFile;
 			class_exists($l)||app::Error(500,'Library File '.$classFile .' Does Not Contain Class '.$l);
-			if(is_null($param))
-			{
-				$GLOBALS['APP']['lib'][$l]=new $l();
-			}
-			else
-			{
-				$GLOBALS['APP']['lib'][$l]=new $l($param);
-			}
+			$class = new ReflectionClass($l);
+			$GLOBALS['APP']['lib'][$l]=$class->newInstanceArgs($arguments);
 			return $GLOBALS['APP']['lib'][$l];
-
 		}
 		else if(is_file($file=LIB_PATH.$lib.'.php'))
 		{
@@ -581,42 +562,32 @@ function S($lib,$param=null)
 	}
 }
 //加载视图,传递参数,设置缓存
-function V($v,$_data_=array(),$fileCacheMinute=0)
+function V($v,$data=null,$fileCacheMinute=0)
 {
-	if(defined('APP_TIME_SPEND'))
+	if($fileCacheMinute||(is_int($data)&&($data>0)))
 	{
-		return template($v,$_data_);
+		$cacheTime=$fileCacheMinute?$fileCacheMinute:$data;
+		$GLOBALS['APP']['cache']['time']=intval($cacheTime*60);
+		$GLOBALS['APP']['cache']['file']=true;
 	}
-	if((is_file($_v_=VIEW_PATH.$v.'.php'))||(is_file($_v_=VIEW_PATH.$v)))
+	if(!empty($GLOBALS['APP']['cache']['file']))
 	{
-		if($fileCacheMinute||(is_int($_data_)&&($_data_>0)))
-		{
-			$cacheTime=$fileCacheMinute?$fileCacheMinute:$_data_;
-			$GLOBALS['APP']['cache']['time']=intval($cacheTime*60);
-			$GLOBALS['APP']['cache']['file']=true;
-		}
-		define('APP_TIME_SPEND',round((microtime(true)-APP_START_TIME),4));//耗时
-		define('APP_MEMORY_SPEND',byteFormat(memory_get_usage()-APP_START_MEMORY));
-		(is_array($_data_)&&!empty($_data_))&&extract($_data_);
-		include $_v_;
-		if(!empty($GLOBALS['APP']['cache']['file']))//启用了缓存,并且启用了文件缓存
+		$callback=function($buffer)
 		{
 			$expire=intval(time()+$GLOBALS['APP']['cache']['time']);
-			//生成文件缓存
-			$contents=ob_get_contents();
 			$router=$GLOBALS['APP']['router'];
 			//与缓存检测时一致,闭包路由也可以使用文件缓存
 			$file=is_object($router[1])?app::fileCache($router[0]):app::fileCache($router);
-			file_put_contents($file,$contents);
+			file_put_contents($file,$buffer);
 			touch($file,$expire);
-		}
-		defined('STDIN')||(ob_end_flush()&&flush());
+			defined('STDIN')||(ob_end_flush()&&flush());
+		};
 	}
 	else
 	{
-		return app::Error(404,'View File '.$_v_.' Not Found ! ');
+		$callback=null;
 	}
-
+	return template($v,is_array($data)?$data:null,$callback);
 }
 //缓存,第一个参数为缓存时间,第二个为是否文件缓存
 function C($time,$file=false)
@@ -644,12 +615,14 @@ function C($time,$file=false)
 	}
 }
 
-function template($_v_,$_data_=array())///加载模版
+function template($v,Array $_data_=null,Closure $callback=null)
 {
-	if((is_file($_v_=VIEW_PATH.$_v_.'.php'))||(is_file($_v_=VIEW_PATH.$_v_)))
+	if((is_file($_v_=VIEW_PATH.$v.'.php'))||(is_file($_v_=VIEW_PATH.$v)))
 	{
+		header('X-Xss-Protection:1; mode=block',true);
+		header('X-Frame-Options:DENY',true);
 		(is_array($_data_)&&!empty($_data_))&&extract($_data_);
-		return include $_v_;
+		return $callback?((include $_v_)&&$callback(ob_get_contents())):include $_v_;
 	}
 	else
 	{
@@ -765,48 +738,22 @@ class Request
 		}
 		return $data;
 	}
-	public static function ip()
+	public static function ip($default=null)
 	{
-		if ($ip=self::getVar('server','HTTP_X_FORWARDED_FOR'))
-			return $ip;
-		else if ($ip=self::getVar('server','HTTP_CLIENT_IP'))
-			return $ip;
-		else if ($ip=self::getVar('server','REMOTE_ADDR'))
-			return $ip;
-		else if ($ip=getenv("HTTP_X_FORWARDED_FOR"))
-			return $ip;
-		else if ($ip=getenv("HTTP_CLIENT_IP"))
-			return $ip;
-		else if ($ip=getenv("REMOTE_ADDR"))
-			return $ip;
-		else return null;
-
+		$ip=getenv('REMOTE_ADDR');
+		return $ip?$ip:(isset($_SERVER['REMOTE_ADDR'])?$_SERVER['REMOTE_ADDR']:$default);
 	}
 	public static function info($key=null,$default=null)
 	{
-		$data['ip']=self::ip();
-		$data['ajax']=self::isAjax();
-		$data['ua']=self::ua();
-		$data['refer']=self::refer();
-		$data['protocol'] = (isset($_SERVER['HTTPS']) && (strtolower($_SERVER['HTTPS']) != 'off')) ? "https" : "http";
+		$data=array('ip'=>self::ip(),'ajax'=>self::isAjax(),'ua'=>self::ua(),'refer'=>self::refer(),'protocol'=>(isset($_SERVER['HTTPS'])&&(strtolower($_SERVER['HTTPS']) != 'off'))?"https":"http");
 		if($key) {return isset($data[$key])?$data[$key]:$default;}
 		return $data;
 	}
 	public static function serverInfo($key=null,$default=null)
 	{
-		$info['server_ip']=gethostbyname(self::getVar('server',"SERVER_NAME"));///服务器IP
-		$info['max_exectime']=ini_get('max_execution_time');//最大执行时间
-		$info['max_upload']=ini_get('file_uploads')?ini_get('upload_max_filesize'):0;///最大上传
-		$info['php_vision']=PHP_VERSION;////php版本
-		$info['os']=PHP_OS;///操作系统类型
-		$info['run_mode']=php_sapi_name();//php 运行方式
-		$info['post_max_size']=ini_get('post_max_size');
-		if($key)
-		{
-			return isset($info[$key])?$info[$key]:$default;
-		}
+		$info=array('php_os'=>PHP_OS,'php_sapi'=>PHP_SAPI,'php_vision'=>PHP_VERSION,'post_max_size'=>ini_get('post_max_size'),'max_execution_time'=>ini_get('max_execution_time'),'server_ip'=>gethostbyname($_SERVER['SERVER_NAME']),'upload_max_filesize'=>ini_get('file_uploads')?ini_get('upload_max_filesize'):0);
+		if($key) {return isset($info[$key])?$info[$key]:$default;}
 		return $info;
-
 	}
 	public static function isCli()
 	{
@@ -824,36 +771,28 @@ class Request
 	{
 		return isset($_SERVER['REQUEST_METHOD']) && $_SERVER['REQUEST_METHOD'] === 'POST';
 	}
-	public static function isRobot()
+	public static function isSpider()
 	{
 		$agent=isset($_SERVER['HTTP_USER_AGENT'])?$_SERVER['HTTP_USER_AGENT']:null;
-		if($agent)
-		{
-			return preg_match('/(spider|bot|slurp|crawler)/i', strtolower($agent));
-		}
-		return true;
+		return $agent?preg_match('/(spider|bot|slurp|crawler)/i',$agent):true;
 	}
-	public static function isMoblie()
+	public static function isMobile()
 	{
 		$agent=isset($_SERVER['HTTP_USER_AGENT'])?$_SERVER['HTTP_USER_AGENT']:null;
-		$regexMatch="/(nokia|iphone|android|motorola|^mot\-|softbank|foma|docomo|kddi|up\.browser|up\.link|";
-		$regexMatch.="htc|dopod|blazer|netfront|helio|hosin|huawei|novarra|CoolPad|webos|techfaith|palmsource|";
-		$regexMatch.="blackberry|alcatel|amoi|ktouch|nexian|samsung|^sam\-|s[cg]h|^lge|ericsson|philips|sagem|wellcom|bunjalloo|maui|";
-		$regexMatch.="symbian|smartphone|midp|wap|phone|windows ce|iemobile|^spice|^bird|^zte\-|longcos|pantech|gionee|^sie\-|portalmmm|";
-		$regexMatch.="jig\s browser|hiptop|^ucweb|^benq|haier|^lct|opera\s*mobi|opera\*mini|320x320|240x320|176x220";
-		$regexMatch.=")/i";
-		return preg_match($regexMatch, strtolower($agent));
+		$regexMatch="/(nokia|iphone|android|motorola|ktouch|samsung|symbian|blackberry|CoolPad|huawei|hosin|htc|smartphone)/i";
+		return $agent?preg_match($regexMatch,$agent):true;
 	}
-	public static function ua()
+	public static function ua($default=null)
 	{
-		return self::getVar('server','HTTP_USER_AGENT');
+		return isset($_SERVER['HTTP_USER_AGENT'])?$_SERVER['HTTP_USER_AGENT']:$default;
 	}
-	public static function refer()
+	public static function refer($default=null)
 	{
-		return self::getvar('server','HTTP_REFERER');
+		return isset($_SERVER['HTTP_REFERER'])?$_SERVER['HTTP_REFERER']:$default;
 	}
-	public static function filterPost($rule,$callback=null,$clean=false)
+	public static function filterPost(Array $rule,Closure $callback=null,$clean=false)
 	{
+		$allowed=array();
 		foreach ($rule as $key => $value)
 		{
 			$allowed[]=is_int($key)?$value:$key;
@@ -861,8 +800,9 @@ class Request
 		$post=self::cleanData($_POST,$allowed,$clean);
 		return Validate::rule($rule,$post,$callback);
 	}
-	public static function filterGet($rule,$callback=null,$clean=false)
+	public static function filterGet(Array $rule,Closure $callback=null,$clean=false)
 	{
+		$allowed=array();
 		foreach ($rule as $key => $value)
 		{
 			$allowed[]=is_int($key)?$value:$key;
@@ -870,17 +810,13 @@ class Request
 		$get=self::cleanData($_GET,$allowed,$clean);
 		return Validate::rule($rule,$get,$callback);
 	}
-	private static function cleanData($input,$allowed,$clean=false)
+	private static function cleanData(Array $input,Array $allowed,$clean=false)
 	{
-		foreach(array_keys($input) as $key )
+		foreach ($input as $key => $value)
 		{
-			if ( !in_array($key,$allowed)||!$key )
+			if(!in_array($key,$allowed))
 			{
-				 unset($input[$key]);
-			}
-			if($clean)
-			{
-				$input[$key]=self::clean($input[$key]);
+				unset($input[$key]);
 			}
 		}
 		foreach ($allowed as $item)
@@ -888,6 +824,10 @@ class Request
 			if(!isset($input[$item]))
 			{
 				$input[$item]=null;
+			}
+			else if($clean)
+			{
+				$input[$item]=self::clean($input[$item],$clean);
 			}
 		}
 		return $input;
@@ -897,55 +837,36 @@ class Request
 		switch ($type)
 		{
 			case 'post':
-				return isset($_POST[$var])?($clean?self::clean($_POST[$var]):$_POST[$var]):$default;
-				break;
+				return isset($_POST[$var])?($clean?self::clean($_POST[$var],$clean):$_POST[$var]):$default;
 			case 'get':
-				return isset($_GET[$var])?($clean?self::clean($_GET[$var]):$_GET[$var]):$default;
-				break;
+				return isset($_GET[$var])?($clean?self::clean($_GET[$var],$clean):$_GET[$var]):$default;
 			case 'cookie':
-				return isset($_COOKIE[$var])?($clean?self::clean($_COOKIE[$var]):$_COOKIE[$var]):$default;
-				break;
+				return isset($_COOKIE[$var])?($clean?self::clean($_COOKIE[$var],$clean):$_COOKIE[$var]):$default;
 			case 'server':
 				return isset($_SERVER[$var])?$_SERVER[$var]:$default;
-				break;
-			case 'session': ///此处为获取session的方式
+			case 'session':
 				return isset($_SESSION[$var])?$_SESSION[$var]:$default;
-				break;
 			default:
 				return false;
-				break;
 		}
 	}
-	/**
-	 * 默认普通过滤,去除html标签,去除空格
-	 * $type null 默认 去除xss
-	 * $type 1 去除中文
-	 * $type 2 
-	 * $type 3
-	 */
 	public static function clean($val,$type=null)
 	{
-		if(is_null($type))
+		switch ($type)
 		{
-			return $val;
+			case 'int':
+				return intval($val);
+			case 'float':
+				return floatval($val);
+			case 'xss':
+				return filter_var(htmlspecialchars(strip_tags($val),ENT_QUOTES),FILTER_SANITIZE_STRING);
+			case 'html':
+				return strip_tags($val);
+			case 'en':
+				return preg_replace('/[\x80-\xff]/','',$val);
+			default:
+				return $type?sprintf($type,$val):trim($val);
 		}
-		else
-		{
-			switch ($type)
-			{
-				case 1:
-					$out=preg_replace('/[\x80-\xff]/','',$val);
-					break;
-				case 2:
-					$out=preg_replace('','', $val);
-					break;
-				default:
-					$out=strip_tags($val);
-					break;
-			}
-			return trim($out);
-		}
-
 	}
 	public static function __callStatic($method,$args)
 	{
@@ -958,19 +879,27 @@ class Request
 */
 class Validate
 {
-	public static function rule($rule,$data,$callback=null)
+	public static function rule($rule,$data,Closure $callback=null)
 	{
 		try
 		{
 			foreach($rule as $k=>&$item)
 			{
-				if(isset($data[$k])&&$data[$k]!='')//存在要验证的数据
+				if(isset($data[$k])&&$data[$k])//存在要验证的数据
 				{
 					foreach($item as $type=>$msg)
 					{
-						if(is_object($msg)) //是一个过滤器
+						if($msg instanceof Closure)
 						{
-							$data[$k]=$msg($data[$k]);
+							$ret=$msg($data[$k],$k);
+							if(!$ret)
+							{
+								throw new Exception($k,-120);
+							}
+							else if($ret!==true)
+							{
+								$data[$k]=$ret;
+							}
 						}
 						else if(is_int($type))
 						{
@@ -978,7 +907,7 @@ class Validate
 						}
 						else if(stripos($type,'='))
 						{
-							self::mixedChecker($data[$k],explode('=', $type),$msg);
+							self::mixedChecker($data[$k],explode('=',$type),$msg);
 						}
 						else
 						{
@@ -988,25 +917,17 @@ class Validate
 				}
 				else if(isset($item['require'])) //标记为require,却不存在
 				{
-					throw new Exception($item['require'], -1);
+					throw new Exception($item['require'],-100);
 				}
 			}
 
 		}
 		catch(Exception $e)
 		{
-			$data=json_encode(array('code'=>$e->getCode(),'msg'=>$e->getMessage()));
-			if(is_callable($callback))
-			{
-				$callback($data,$e);
-			}
-			else if($callback)
-			{
-				exit($data);
-			}
-			return false;
+			$data=array('code'=>$e->getCode(),'msg'=>$e->getMessage());
+			return $callback?$callback(json_encode($data),$data):false;
 		}
-		if(!empty($sw)&&is_array($sw))
+		if(!empty($sw))
 		{
 			foreach($sw as $from=>$to)
 			{
@@ -1016,7 +937,6 @@ class Validate
 		}
 		return $data; //数据全部校验通过
 	}
-
 	private static function typeChecker($item,$type,$msg)
 	{
 		switch ($type)
@@ -1024,56 +944,58 @@ class Validate
 			case 'require':
 				if(empty($item))
 				{
-					throw new Exception($msg, -1);
+					throw new Exception($msg, -101);
 				}
 				break;
 			case 'email':
 				if(!self::email($item))
 				{
-					throw new Exception($msg, -2);
+					throw new Exception($msg, -102);
 				}
 				break;
 			case 'username':
 				if(!self::username($item))
 				{
-					throw new Exception($msg, -3);
+					throw new Exception($msg, -103);
 				}
 				break;
 			case 'password':
 				if(!self::password($item))
 				{
-					throw new Exception($msg, -4);
+					throw new Exception($msg, -104);
 				}
 				break;
 			case 'phone':
 				if(!self::phone($item))
 				{
-					throw new Exception($msg, -5);
+					throw new Exception($msg, -105);
 				}
 				break;
 			case 'url':
 				if(!self::url($item))
 				{
-					throw new Exception($msg, -6);
+					throw new Exception($msg, -106);
 				}
 				break;
 			case 'ip':
 				if(!self::ip($item))
 				{
-					throw new Exception($msg, -7);
+					throw new Exception($msg, -107);
 				}
 				break;
 			case 'idcard':
 				if(!self::idcard($item))
 				{
-					throw new Exception($msg, -8);
+					throw new Exception($msg, -108);
 				}
 				break;
 			default:
-				throw new Exception("Error Type Rule {$type}", -404);
+				if(!self::this($type,$item))
+				{
+					throw new Exception($msg, -109);
+				}
 				break;
 		}
-
 	}
 	private static function mixedChecker($item,$mixed,$msg)
 	{
@@ -1082,24 +1004,23 @@ class Validate
 			case 'minlength':
 				if(strlen($item)<$mixed[1])
 				{
-					throw new Exception($msg, -9);
+					throw new Exception($msg, -201);
 				}
 				break;
 			case 'maxlength':
 				if(strlen($item)>$mixed[1])
 				{
-					throw new Exception($msg, -10);
+					throw new Exception($msg, -202);
 				}
 				break;
 			case 'eq':
 				if($item!=$mixed[1])
 				{
-					throw new Exception($msg, -11);
+					throw new Exception($msg, -203);
 				}
 				break;
 			default:
 				throw new Exception("Error Mixed Rule {$mixed[0]}", -500);
-				break;
 		}
 	}
 	public static function email($email)
@@ -1108,7 +1029,7 @@ class Validate
 	}
 	public static function phone($phone)
 	{
-		return preg_match("/^1[3458][0-9]{9}$/",$phone);
+		return preg_match("/^1[34578][0-9]{9}$/",$phone);
 	}
 	public static function url($url)
 	{
@@ -1116,10 +1037,6 @@ class Validate
 	}
 	public static function ip($ip)
 	{
-		if(function_exists('ip2long'))
-		{
-			return (ip2long($ip)!==false);  			
-		}
 		return filter_var($ip,FILTER_VALIDATE_IP);
 	}
 	//中国大陆身份证号(15位或18位)
@@ -1143,189 +1060,126 @@ class Validate
 	{
 		return preg_match($pattern, $subject);
 	}
-
 }
-
 /**
 * model 层,可以静态方式使用
 */
-class DB extends PDO 
+class DB
 {
-	private  static $pdo;///单例模式
+	private static $pdo;
 
-	function __construct($dbType=null)
+	final private static function init($dbDsn,$dbUser,$dbPass)
 	{
-		self::init($dbType);
-	}
-	private static function init($dbType=null)
-	{
-		if(is_null($dbType))
-		{
-			$dbType=defined('DB')&&DB?true:false;
-		}
 		if(!self::$pdo)
 		{
-			if($dbType)
+			$options=array(PDO::ATTR_PERSISTENT=>TRUE,PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC,PDO::ATTR_TIMEOUT=>1);
+			try
+			{
+				self::$pdo=new PDO($dbDsn,$dbUser,$dbPass,$options);
+			}
+			catch (PDOException $e)
 			{
 				try
 				{
-					self::$pdo=new PDO("sqlite:".SQLITE);
-					self::$pdo->exec('PRAGMA synchronous=OFF');
-					self::$pdo->exec('PRAGMA cache_size =8000');
-					self::$pdo->exec('PRAGMA temp_store = MEMORY');
+					self::$pdo=new PDO($dbDsn,$dbUser,$dbPass,$options);
 				}
-				catch (PDOException $e)
+				catch(PDOException $e)
 				{
-					return app::Error(500,'Open Sqlite Database Error ! '.$e->getMessage());
+					return app::Error(500,$e->getMessage());
 				}
 			}
-			else
+			if(!empty(static::$initCmd) && is_array(static::$initCmd))
 			{
-				$dsn='mysql:host='.DB_HOST.';dbname='.DB_NAME.';port='.DB_PORT.';charset=UTF8';
-				try
+				foreach (static::$initCmd as $cmd)
 				{
-					self::$pdo= new PDO ($dsn,DB_USER,DB_PASS,array(PDO::ATTR_PERSISTENT=>TRUE,PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION));
-				}
-				catch (PDOException $e)
-				{
-					try
-					{
-						self::$pdo= new PDO ($dsn,DB_USER,DB_PASS,array(PDO::ATTR_PERSISTENT=>TRUE,PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION));
-					}
-					catch(PDOException $e)
-					{
-						return app::Error(500,'Connect Mysql Database Error ! '.$e->getMessage());
-					}
+					self::$pdo->exec($cmd);
 				}
 			}
 		}
 		return self::$pdo;
-
 	}
 	//运行Sql语句,不返回结果集,但会返回成功与否,不能用于select
-	public static function runSql($sql)
+	final public static function runSql($sql)
 	{
 		try
 		{
-			$rs=self::ready()->exec($sql);
 			app::set('sys-sql-count',app::get('sys-sql-count')+1);
-			return $rs;
+			return self::ready()->exec($sql);
 		}
 		catch (PDOException $e)
 		{
-			return app::Error(500,'Run Sql [ '.$sql.' ] Error : '.$e->getMessage());
+			return app::Error(500,"Run Sql [ {$sql} ] Error : ".$e->getMessage());
 		}
 	}
-	////运行Sql,以多维数组方式返回结果集
-	public static function getData($sql)
+	//运行Sql,以多维数组方式返回结果集
+	final public static function getData($sql)
 	{
 		try
 		{
-			$rs=self::ready()->query($sql);
 			app::set('sys-sql-count',app::get('sys-sql-count')+1);
-			if(FALSE==$rs) {return array();}
-			return $rs->fetchAll(PDO::FETCH_ASSOC);
+			$rs=self::ready()->query($sql);
+			return $rs===false?array():$rs->fetchAll(PDO::FETCH_ASSOC);
 		}
 		catch (PDOException $e)
 		{
-			return app::Error(500,'Run Sql [ '.$sql.' ] Error : '.$e->getMessage());
+			return app::Error(500,"Run Sql [ {$sql} ] Error : ".$e->getMessage());
 		}
 	}
 	//运行Sql,以数组方式返回结果集第一条记录
-	public static function getLine($sql)
+	final public static function getLine($sql)
 	{
 		try
 		{
-			$rs=self::ready()->query($sql);
 			app::set('sys-sql-count',app::get('sys-sql-count')+1);
-			if(FALSE==$rs) {return array();}
-			return $rs->fetch(PDO::FETCH_ASSOC);
+			$rs=self::ready()->query($sql);
+			return $rs===false?array():$rs->fetch(PDO::FETCH_ASSOC);
 		}
 		catch (PDOException $e)
 		{
-			return app::Error(500,'Run Sql [ '.$sql.' ] Error : '.$e->getMessage());
+			return app::Error(500,"Run Sql [ {$sql} ] Error : ".$e->getMessage());
 		}
 	}
 	//运行Sql,返回结果集第一条记录的第一个字段值
-	public static function getVar($sql)
+	final public static function getVar($sql)
 	{
 		try
 		{
-			$rs=self::ready()->query($sql);
 			app::set('sys-sql-count',app::get('sys-sql-count')+1);
-			if(FALSE==$rs) {return null;}
-			return $rs->fetchColumn();
+			$rs=self::ready()->query($sql);
+			return $rs===false?null:$rs->fetchColumn();
 		}
 		catch (PDOException $e)
 		{
-			return app::Error(500,'Run Sql [ '.$sql.' ] Error : '.$e->getMessage());
+			return app::Error(500,"Run Sql [ {$sql} ] Error : ".$e->getMessage());
 		}
 	}
-	public static function lastId()
+	final public static function lastId()
 	{
 		return self::ready()->lastInsertId();
 	}
-	//返回原生的PDO对象
-	public static function getInstance($current=true)
+	final public static function getInstance()
 	{
-		if($current)
+		return self::ready();
+	}
+	final private static  function ready()
+	{
+		return self::$pdo?self::$pdo:self::init(DB_DSN,defined('DB_USER')?DB_USER:null,defined('DB_PASS')?DB_PASS:null);
+	}
+	final public function __call($method,$args=null)
+	{
+		return self::__callStatic($method,$args);
+	}
+	final public static function __callStatic($method,$args=null)
+	{
+		if(method_exists(self::ready(),$method))
 		{
-			return self::ready();
+			return call_user_func_array(array(self::$pdo,$method),$args);
 		}
-		else
-		{
-			$origin=self::$pdo;
-			self::$pdo=null;
-			$pdo=self::init(!(defined('DB')&&DB));//相反的
-			self::$pdo=$origin;
-			return $pdo;
-		}
-	}
-	public  function quote($string, $paramtype = null)
-	{
-		return self::ready()->quote($string, $paramtype);
-	}
-	private static  function ready()
-	{
-		return self::$pdo?self::$pdo:self::init();
-	}
-	public function __call($method,$args=null)
-	{
 		return app::Error(500,'Call Error Method '.$method.' In Class '.get_called_class());
-	}
-	public static function __callStatic($method,$args=null)
-	{
-		$instance=M(get_called_class());
-		if($method=='instance')
-		{
-			return $instance;
-		}
-		else
-		{
-			return call_user_func_array(array($instance,ltrim($method,'_')), $args);
-		}
 	}
 
 }//end class db
 
-if(!function_exists('http_response_code'))
-{
-	function http_response_code($code)
-	{
-		$header=(substr(php_sapi_name(),0,3)=='cgi')?'Status: ':'HTTP/1.1 ';
-		static $headers=array(
-							200	=> 'OK', 201	=> 'Created', 202	=> 'Accepted', 203	=> 'Non-Authoritative Information', 204	=> 'No Content', 205	=> 'Reset Content', 206	=> 'Partial Content',
-							300	=> 'Multiple Choices', 301	=> 'Moved Permanently', 302	=> 'Found', 304	=> 'Not Modified', 305	=> 'Use Proxy', 307	=> 'Temporary Redirect',
-							400	=> 'Bad Request', 401	=> 'Unauthorized', 403	=> 'Forbidden', 404	=> 'Not Found', 405	=> 'Method Not Allowed', 406	=> 'Not Acceptable', 407	=> 'Proxy Authentication Required', 408	=> 'Request Timeout', 409	=> 'Conflict', 410	=> 'Gone', 411	=> 'Length Required', 412	=> 'Precondition Failed', 413	=> 'Request Entity Too Large', 414	=> 'Request-URI Too Long', 415	=> 'Unsupported Media Type', 416	=> 'Requested Range Not Satisfiable', 417	=> 'Expectation Failed',
-							500	=> 'Internal Server Error', 501	=> 'Not Implemented', 502	=> 'Bad Gateway', 503	=> 'Service Unavailable', 504	=> 'Gateway Timeout', 505	=> 'HTTP Version Not Supported'
-							);
-		if(isset($headers[$code]))
-		{
-			$text=$headers[$code];
-			header("{$header} {$code} {$text}", TRUE, $code);
-		}
-	}
-}
 function __autoload($class)
 {
 	if(is_file($modelFile=MODEL_PATH.$class.'.php'))
@@ -1338,7 +1192,7 @@ function __autoload($class)
 		require_once $controllerFile;
 		return class_exists($class)||app::Error(500,'Load File '.$controllerFile.' Succeed,But Not Found Class '.$class);
 	}
-	else if(is_file($libFile=LIB_PATH.'class'.DIRECTORY_SEPARATOR.'{$class}.class.php'))
+	else if(is_file($libFile=LIB_PATH.'Class'.DIRECTORY_SEPARATOR."{$class}.class.php"))
 	{
 		require_once $libFile;
 		return class_exists($class)||app::Error(500,'Load File '.$libFile.' Succeed,But Not Found Class '.$class);
@@ -1401,26 +1255,24 @@ function cookie($key,$val=null,$expire=0)
 	}
 
 }
-function json($data,$callback=null)
+function json(Array $data,$callback=null)
 {
-	is_array($data)||parse_str($data,$data);
-	$data=json_encode($data);
-	if($callback&&(is_string($callback)||$callback=Request::get('callback')))
-	{
-		exit($callback."(".$data.")");
-	}
+	$data=json_encode($data,JSON_UNESCAPED_UNICODE);
+	$callback=$callback===true?(empty($_GET['callback'])?null:$_GET['callback']):$callback;
+	$data=$callback?$callback."(".$data.")":$data;
+	header('Content-Type: text/'.($callback?'javascript':'json'),true,200);
 	exit($data);
 }
 function byteFormat($size,$dec=2)
 {
-	$size=max(abs($size),1);
-	$unit=array("B","KB","MB","GB","TB","PB","EB","ZB","YB");
-	return round($size/pow(1024,($i=floor(log($size,1024)))),$dec).' '.$unit[$i];
+	$size=max($size,0);
+	$unit=array('B','KB','MB','GB','TB','PB','EB','ZB','YB');
+	return $size>=1024?round($size/pow(1024,($i=floor(log($size,1024)))),$dec).' '.$unit[$i]:$size.' B';
 }
 //外部重定向,会立即结束脚本以发送header,内部重定向app::run(array);
 function redirect($url,$timeout=0)
 {
-	$timeout=abs(intval($timeout));
+	$timeout=intval($timeout);
 	if(in_array($timeout,array(0,301,302,307)))
 	{
 		header("Location: {$url}",true,$timeout);
@@ -1429,7 +1281,7 @@ function redirect($url,$timeout=0)
 	{
 		header("Refresh: {$timeout}; url={$url}");
 	}
-	exit(header("Cache-Control: no-cache",true));
+	exit(header("Cache-Control: max-age=0, no-cache, must-revalidate, proxy-revalidate",true));
 }
 function baseUrl($path=null)
 {
@@ -1459,16 +1311,17 @@ function decrypt($input,$key=null)
 	}
 	return trim(mcrypt_decrypt(MCRYPT_RIJNDAEL_128,md5($key),base64_decode($input),MCRYPT_MODE_ECB,mcrypt_create_iv(16)));
 }
-function csrf_token($check=false)
+function csrf_token($check=false,$name='_token',Closure $callback=null)
 {
 	isset($_SESSION)||session_start();
 	$token=isset($_SESSION['csrf_token'])?$_SESSION['csrf_token']:null;
 	if($check)
 	{
-		if(!(isset($_REQUEST['_token']) && $_REQUEST['_token'] === $token))
+		if(!(isset($_REQUEST[$name]) && $_REQUEST[$name] === $token))
 		{
-			return app::Error(404,'Csrf Token Not Match ! ');
+			return $callback?$callback():app::Error(403,'Csrf Token Not Match ! ');
 		}
+		return true;
 	}
 	else
 	{
@@ -1495,7 +1348,7 @@ function sendMail($mailTo, $mailSubject, $mailMessage)
 		$headers .= "Date: ".date("r")."\r\n";
 		list($msec, $sec) = explode(" ", microtime());
 		$headers .= "Message-ID: <".date("YmdHis", $sec).".".($msec * 1000000).".".MAIL_USERNAME.">\r\n";
-		if(!$fp = fsockopen(MAIL_SERVER,MAIL_PORT, $errno, $errstr, 10))
+		if(!$fp = fsockopen(MAIL_SERVER,defined('MAIL_PORT')?MAIL_PORT:25, $errno, $errstr, 3))
 		{
 			throw new Exception("Unable to connect to the SMTP server", 1);
 		}
@@ -1505,13 +1358,13 @@ function sendMail($mailTo, $mailSubject, $mailMessage)
 		{
 			throw new Exception("CONNECT - ".$lastmessage, 2);
 		}
-		fputs($fp, (MAIL_AUTH ? 'EHLO' : 'HELO')." befen\r\n");
+		fputs($fp,"EHLO befen\r\n");
 		$lastmessage = fgets($fp, 512);
 		if(substr($lastmessage, 0, 3) != 220 && substr($lastmessage, 0, 3) != 250)
 		{
 			throw new Exception("HELO/EHLO - ".$lastmessage, 3);
 		}
-		while(1)
+		while(true)
 		{
 			if(substr($lastmessage, 3, 1) != '-' || empty($lastmessage))
 			{
@@ -1519,25 +1372,22 @@ function sendMail($mailTo, $mailSubject, $mailMessage)
 			}
 			$lastmessage = fgets($fp, 512);
 		}
-		if(MAIL_AUTH)
+		fputs($fp, "AUTH LOGIN\r\n");$lastmessage = fgets($fp, 512);
+		if(substr($lastmessage, 0, 3) != 334)
 		{
-			fputs($fp, "AUTH LOGIN\r\n");$lastmessage = fgets($fp, 512);
-			if(substr($lastmessage, 0, 3) != 334)
-			{
-				throw new Exception($lastmessage, 4);
-			}
-			fputs($fp, base64_encode(MAIL_USERNAME)."\r\n");
-			$lastmessage = fgets($fp, 512);
-			if(substr($lastmessage, 0, 3) != 334)
-			{
-				throw new Exception("AUTH LOGIN - ".$lastmessage, 5);
-			}
-			fputs($fp, base64_encode(MAIL_PASSWORD)."\r\n");
-			$lastmessage = fgets($fp, 512);
-			if(substr($lastmessage, 0, 3) != 235)
-			{
-				throw new Exception("AUTH LOGIN - ".$lastmessage, 6);
-			}
+			throw new Exception($lastmessage, 4);
+		}
+		fputs($fp, base64_encode(MAIL_USERNAME)."\r\n");
+		$lastmessage = fgets($fp, 512);
+		if(substr($lastmessage, 0, 3) != 334)
+		{
+			throw new Exception("AUTH LOGIN - ".$lastmessage, 5);
+		}
+		fputs($fp, base64_encode(MAIL_PASSWORD)."\r\n");
+		$lastmessage = fgets($fp, 512);
+		if(substr($lastmessage, 0, 3) != 235)
+		{
+			throw new Exception("AUTH LOGIN - ".$lastmessage, 6);
 		}
 		fputs($fp, "MAIL FROM: <".preg_replace("/.*\<(.+?)\>.*/", "\\1", MAIL_USERNAME).">\r\n");
 		$lastmessage = fgets($fp, 512);
@@ -1589,7 +1439,6 @@ function sendMail($mailTo, $mailSubject, $mailMessage)
 		app::log($e->getMessage(),'ERROR');
 		return false;
 	}
-	
 }
 
-// end  of file core.php
+// end of file core.php
